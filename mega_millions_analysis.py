@@ -1,6 +1,7 @@
 import pandas as pd
 from collections import Counter, defaultdict
 from typing import List, Dict, Tuple
+import os
 
 class MegaMillionsAnalyzer:
     def __init__(self, csv_file: str):
@@ -73,46 +74,63 @@ class MegaMillionsAnalyzer:
             
         return pd.DataFrame(optimized_data)
 
+    def export_analysis(self, output_dir: str = "analysis_results"):
+        """Export all analysis results to CSV files."""
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Export repeated combinations
+        repeated_data = []
+        for combo, freq in self.get_repeated_combinations().items():
+            main_numbers = combo[:-1]
+            mega_ball = combo[-1]
+            repeated_data.append({
+                'Main_Numbers': ' '.join(map(str, main_numbers)),
+                'Mega_Ball': mega_ball,
+                'Frequency': freq
+            })
+        pd.DataFrame(repeated_data).to_csv(f"{output_dir}/mega_millions_repeated_combinations.csv", index=False)
+        
+        # Export position frequencies
+        position_data = []
+        for pos in range(5):
+            frequencies = self.get_position_frequencies(pos)
+            for number, freq in frequencies.items():
+                position_data.append({
+                    'Position': pos + 1,
+                    'Number': number,
+                    'Frequency': freq
+                })
+        pd.DataFrame(position_data).to_csv(f"{output_dir}/mega_millions_position_frequencies.csv", index=False)
+        
+        # Export Mega Ball frequencies
+        mega_data = []
+        for number, freq in self.get_megaball_frequencies().items():
+            mega_data.append({
+                'Mega_Ball': number,
+                'Frequency': freq
+            })
+        pd.DataFrame(mega_data).to_csv(f"{output_dir}/mega_millions_megaball_frequencies.csv", index=False)
+        
+        # Export general frequencies
+        general_data = []
+        for number, freq in self.get_general_frequencies().items():
+            general_data.append({
+                'Number': number,
+                'Frequency': freq
+            })
+        pd.DataFrame(general_data).to_csv(f"{output_dir}/mega_millions_general_frequencies.csv", index=False)
+        
+        # Export optimized data
+        self.optimize_dataframe().to_csv(f"{output_dir}/mega_millions_optimized_data.csv", index=False)
+
 def main():
     # Initialize analyzer
     analyzer = MegaMillionsAnalyzer('mega_million.csv')
     
-    # Get and print repeated combinations
-    print("\nRepeated Combinations (appeared more than once):")
-    repeated = analyzer.get_repeated_combinations()
-    for combo, freq in repeated.items():
-        main_numbers = combo[:-1]
-        mega_ball = combo[-1]
-        print(f"Combination {main_numbers} MB:{mega_ball}: appeared {freq} times")
-    
-    # Print position frequencies
-    print("\nPosition-wise Frequencies:")
-    for pos in range(5):  # Mega Millions has 5 main numbers
-        print(f"\nPosition {pos + 1}:")
-        frequencies = analyzer.get_position_frequencies(pos)
-        sorted_freq = sorted(frequencies.items(), key=lambda x: x[1], reverse=True)
-        for number, freq in sorted_freq[:5]:  # Show top 5 numbers for each position
-            print(f"Number {number}: {freq} times")
-    
-    # Print Mega Ball frequencies
-    print("\nMega Ball Frequencies (Top 10):")
-    mega_freq = analyzer.get_megaball_frequencies()
-    sorted_mega = sorted(mega_freq.items(), key=lambda x: x[1], reverse=True)
-    for number, freq in sorted_mega[:10]:
-        print(f"Mega Ball {number}: {freq} times")
-    
-    # Print overall frequencies
-    print("\nOverall Number Frequencies (Top 10, excluding Mega Ball):")
-    general_freq = analyzer.get_general_frequencies()
-    sorted_general = sorted(general_freq.items(), key=lambda x: x[1], reverse=True)
-    for number, freq in sorted_general[:10]:
-        print(f"Number {number}: {freq} times")
-    
-    # Create optimized DataFrame
-    print("\nCreating optimized DataFrame...")
-    optimized_df = analyzer.optimize_dataframe()
-    print("Sample of optimized data:")
-    print(optimized_df.head())
+    # Export all analysis results
+    analyzer.export_analysis()
+    print("Analysis complete! Results have been exported to the 'analysis_results' directory.")
 
 if __name__ == "__main__":
     main() 

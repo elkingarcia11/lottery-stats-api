@@ -1,6 +1,7 @@
 import pandas as pd
 from collections import Counter, defaultdict
 from typing import List, Dict, Tuple
+import os
 
 class PowerballAnalyzer:
     def __init__(self, csv_file: str):
@@ -8,6 +9,7 @@ class PowerballAnalyzer:
         self.df = pd.read_csv(csv_file)
         self.position_frequencies = defaultdict(Counter)
         self.general_frequencies = Counter()
+        self.powerball_frequencies = Counter()  # New counter for Powerball numbers
         self.combination_frequencies = Counter()
         self.process_data()
 
@@ -16,16 +18,21 @@ class PowerballAnalyzer:
         for _, row in self.df.iterrows():
             # Split the winning numbers string into a list of numbers
             numbers = [int(num) for num in row['Winning Numbers'].split()]
+            main_numbers = numbers[:5]  # First 5 numbers
+            powerball = numbers[5]      # Last number is Powerball
             
-            # Track combination frequencies (as tuple to be hashable)
+            # Track combination frequencies
             self.combination_frequencies[tuple(numbers)] += 1
             
-            # Track position frequencies
-            for pos, num in enumerate(numbers):
+            # Track position frequencies for main numbers
+            for pos, num in enumerate(main_numbers):
                 self.position_frequencies[pos][num] += 1
                 
-            # Track general frequencies
-            self.general_frequencies.update(numbers)
+            # Track Powerball frequencies separately
+            self.powerball_frequencies[powerball] += 1
+                
+            # Track general frequencies (excluding Powerball)
+            self.general_frequencies.update(main_numbers)
 
     def get_repeated_combinations(self, min_occurrences: int = 2) -> Dict[Tuple[int, ...], int]:
         """Return combinations that appeared more than once."""
@@ -33,11 +40,15 @@ class PowerballAnalyzer:
                 if freq >= min_occurrences}
 
     def get_position_frequencies(self, position: int) -> Dict[int, int]:
-        """Get frequency distribution for a specific position (0-5)."""
+        """Get frequency distribution for a specific position (0-4 for main numbers)."""
         return dict(self.position_frequencies[position])
 
+    def get_powerball_frequencies(self) -> Dict[int, int]:
+        """Get frequency distribution for Powerball numbers."""
+        return dict(self.powerball_frequencies)
+
     def get_general_frequencies(self) -> Dict[int, int]:
-        """Get overall frequency distribution of numbers."""
+        """Get overall frequency distribution of main numbers (excluding Powerball)."""
         return dict(self.general_frequencies)
 
     def optimize_dataframe(self) -> pd.DataFrame:
@@ -61,38 +72,63 @@ class PowerballAnalyzer:
             
         return pd.DataFrame(optimized_data)
 
+    def export_analysis(self, output_dir: str = "analysis_results"):
+        """Export all analysis results to CSV files."""
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Export repeated combinations
+        repeated_data = []
+        for combo, freq in self.get_repeated_combinations().items():
+            main_numbers = combo[:5]
+            powerball = combo[5]
+            repeated_data.append({
+                'Main_Numbers': ' '.join(map(str, main_numbers)),
+                'Powerball': powerball,
+                'Frequency': freq
+            })
+        pd.DataFrame(repeated_data).to_csv(f"{output_dir}/powerball_repeated_combinations.csv", index=False)
+        
+        # Export position frequencies
+        position_data = []
+        for pos in range(5):  # Only main numbers positions
+            frequencies = self.get_position_frequencies(pos)
+            for number, freq in frequencies.items():
+                position_data.append({
+                    'Position': pos + 1,
+                    'Number': number,
+                    'Frequency': freq
+                })
+        pd.DataFrame(position_data).to_csv(f"{output_dir}/powerball_position_frequencies.csv", index=False)
+        
+        # Export Powerball frequencies
+        powerball_data = []
+        for number, freq in self.get_powerball_frequencies().items():
+            powerball_data.append({
+                'Powerball': number,
+                'Frequency': freq
+            })
+        pd.DataFrame(powerball_data).to_csv(f"{output_dir}/powerball_specific_frequencies.csv", index=False)
+        
+        # Export general frequencies
+        general_data = []
+        for number, freq in self.get_general_frequencies().items():
+            general_data.append({
+                'Number': number,
+                'Frequency': freq
+            })
+        pd.DataFrame(general_data).to_csv(f"{output_dir}/powerball_general_frequencies.csv", index=False)
+        
+        # Export optimized data
+        self.optimize_dataframe().to_csv(f"{output_dir}/powerball_optimized_data.csv", index=False)
+
 def main():
     # Initialize analyzer
     analyzer = PowerballAnalyzer('powerball.csv')
     
-    # Get and print repeated combinations
-    print("\nRepeated Combinations (appeared more than once):")
-    repeated = analyzer.get_repeated_combinations()
-    for combo, freq in repeated.items():
-        print(f"Combination {combo}: appeared {freq} times")
-    
-    # Print position frequencies
-    print("\nPosition-wise Frequencies:")
-    for pos in range(6):
-        pos_name = "Powerball" if pos == 5 else f"Position {pos + 1}"
-        print(f"\n{pos_name}:")
-        frequencies = analyzer.get_position_frequencies(pos)
-        sorted_freq = sorted(frequencies.items(), key=lambda x: x[1], reverse=True)
-        for number, freq in sorted_freq[:5]:  # Show top 5 numbers for each position
-            print(f"Number {number}: {freq} times")
-    
-    # Print overall frequencies
-    print("\nOverall Number Frequencies (Top 10):")
-    general_freq = analyzer.get_general_frequencies()
-    sorted_general = sorted(general_freq.items(), key=lambda x: x[1], reverse=True)
-    for number, freq in sorted_general[:10]:
-        print(f"Number {number}: {freq} times")
-    
-    # Create optimized DataFrame
-    print("\nCreating optimized DataFrame...")
-    optimized_df = analyzer.optimize_dataframe()
-    print("Sample of optimized data:")
-    print(optimized_df.head())
+    # Export all analysis results
+    analyzer.export_analysis()
+    print("Analysis complete! Results have been exported to the 'analysis_results' directory.")
 
 if __name__ == "__main__":
     main() 
