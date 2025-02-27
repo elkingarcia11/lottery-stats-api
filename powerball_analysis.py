@@ -2,6 +2,7 @@ import pandas as pd
 from collections import Counter, defaultdict
 from typing import List, Dict, Tuple
 import os
+import random
 
 class PowerballAnalyzer:
     def __init__(self, csv_file: str):
@@ -160,20 +161,53 @@ class PowerballAnalyzer:
         # Export optimized data
         self.optimize_dataframe().to_csv(f"{output_dir}/powerball_optimized_data.csv", index=False)
 
+    def generate_unique_combination(self) -> Dict:
+        """
+        Generate a random combination that has never appeared in historical data.
+        
+        For Powerball:
+        - Main numbers: 1-69
+        - Powerball number: 1-26
+        - Numbers must be unique for main numbers
+        
+        Returns:
+            Dictionary containing the generated combination
+        """
+        max_attempts = 1000  # Prevent infinite loop
+        attempts = 0
+        
+        while attempts < max_attempts:
+            # Generate 5 unique main numbers between 1-69
+            main_numbers = sorted(random.sample(range(1, 70), 5))
+            # Generate Powerball number between 1-26
+            powerball = random.randint(1, 26)
+            
+            # Check if this combination exists
+            result = self.check_combination(main_numbers + [powerball])
+            if not result["exists"]:
+                return {
+                    "main_numbers": main_numbers,
+                    "powerball": powerball,
+                    "attempts_needed": attempts + 1
+                }
+            
+            attempts += 1
+        
+        return {"error": f"Could not find unique combination after {max_attempts} attempts"}
+
 def main():
     # Initialize analyzer
     analyzer = PowerballAnalyzer('powerball.csv')
     
-    # Example of checking a combination
-    print("\nChecking example combination...")
-    example_combination = [1, 2, 3, 4, 5, 6]  # Example numbers
-    result = analyzer.check_combination(example_combination)
-    if result.get("exists"):
-        print(f"Combination found!")
-        print(f"Occurred {result['frequency']} times")
-        print(f"Draw dates: {', '.join(result['dates'])}")
+    # Generate and check a unique combination
+    print("\nGenerating a unique combination that has never occurred...")
+    unique_combo = analyzer.generate_unique_combination()
+    if "error" not in unique_combo:
+        print(f"Found unique combination after {unique_combo['attempts_needed']} attempts:")
+        print(f"Main numbers: {unique_combo['main_numbers']}")
+        print(f"Powerball: {unique_combo['powerball']}")
     else:
-        print("Combination has never occurred in historical data")
+        print(unique_combo["error"])
     
     # Export all analysis results
     analyzer.export_analysis()
