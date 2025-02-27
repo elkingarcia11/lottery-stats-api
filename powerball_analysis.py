@@ -34,6 +34,44 @@ class PowerballAnalyzer:
             # Track general frequencies (excluding Powerball)
             self.general_frequencies.update(main_numbers)
 
+    def check_combination(self, numbers: List[int]) -> Dict:
+        """
+        Check if a combination exists in historical data.
+        
+        Args:
+            numbers: List of 6 integers where first 5 are main numbers and last is Powerball
+            
+        Returns:
+            Dictionary containing existence info and frequency if found
+        """
+        if len(numbers) != 6:
+            return {"error": "Invalid combination. Must provide 6 numbers (5 main numbers + Powerball)"}
+        
+        combo_tuple = tuple(numbers)
+        frequency = self.combination_frequencies.get(combo_tuple, 0)
+        
+        if frequency > 0:
+            # Find the dates this combination occurred
+            dates = []
+            for _, row in self.df.iterrows():
+                row_numbers = [int(num) for num in row['Winning Numbers'].split()]
+                if tuple(row_numbers) == combo_tuple:
+                    dates.append(row['Draw Date'])
+            
+            return {
+                "exists": True,
+                "frequency": frequency,
+                "dates": dates,
+                "main_numbers": numbers[:5],
+                "powerball": numbers[5]
+            }
+        else:
+            return {
+                "exists": False,
+                "main_numbers": numbers[:5],
+                "powerball": numbers[5]
+            }
+
     def get_repeated_combinations(self, min_occurrences: int = 2) -> Dict[Tuple[int, ...], int]:
         """Return combinations that appeared more than once."""
         return {combo: freq for combo, freq in self.combination_frequencies.items() 
@@ -126,9 +164,20 @@ def main():
     # Initialize analyzer
     analyzer = PowerballAnalyzer('powerball.csv')
     
+    # Example of checking a combination
+    print("\nChecking example combination...")
+    example_combination = [1, 2, 3, 4, 5, 6]  # Example numbers
+    result = analyzer.check_combination(example_combination)
+    if result.get("exists"):
+        print(f"Combination found!")
+        print(f"Occurred {result['frequency']} times")
+        print(f"Draw dates: {', '.join(result['dates'])}")
+    else:
+        print("Combination has never occurred in historical data")
+    
     # Export all analysis results
     analyzer.export_analysis()
-    print("Analysis complete! Results have been exported to the 'analysis_results' directory.")
+    print("\nAnalysis complete! Results have been exported to the 'analysis_results' directory.")
 
 if __name__ == "__main__":
     main() 

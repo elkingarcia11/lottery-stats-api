@@ -36,6 +36,46 @@ class MegaMillionsAnalyzer:
             # Track general frequencies (excluding Mega Ball)
             self.general_frequencies.update(numbers)
 
+    def check_combination(self, numbers: List[int], megaball: int) -> Dict:
+        """
+        Check if a combination exists in historical data.
+        
+        Args:
+            numbers: List of 5 integers for main numbers
+            megaball: Integer for the Mega Ball number
+            
+        Returns:
+            Dictionary containing existence info and frequency if found
+        """
+        if len(numbers) != 5:
+            return {"error": "Invalid combination. Must provide 5 main numbers"}
+        
+        full_combination = tuple(numbers + [megaball])
+        frequency = self.combination_frequencies.get(full_combination, 0)
+        
+        if frequency > 0:
+            # Find the dates this combination occurred
+            dates = []
+            for _, row in self.df.iterrows():
+                row_numbers = [int(num) for num in row['Winning Numbers'].split()]
+                row_megaball = int(row['Mega Ball'])
+                if tuple(row_numbers + [row_megaball]) == full_combination:
+                    dates.append(row['Draw Date'])
+            
+            return {
+                "exists": True,
+                "frequency": frequency,
+                "dates": dates,
+                "main_numbers": numbers,
+                "mega_ball": megaball
+            }
+        else:
+            return {
+                "exists": False,
+                "main_numbers": numbers,
+                "mega_ball": megaball
+            }
+
     def get_repeated_combinations(self, min_occurrences: int = 2) -> Dict[Tuple[int, ...], int]:
         """Return combinations that appeared more than once."""
         return {combo: freq for combo, freq in self.combination_frequencies.items() 
@@ -128,9 +168,21 @@ def main():
     # Initialize analyzer
     analyzer = MegaMillionsAnalyzer('mega_million.csv')
     
+    # Example of checking a combination
+    print("\nChecking example combination...")
+    example_numbers = [1, 2, 3, 4, 5]  # Example main numbers
+    example_megaball = 6               # Example Mega Ball
+    result = analyzer.check_combination(example_numbers, example_megaball)
+    if result.get("exists"):
+        print(f"Combination found!")
+        print(f"Occurred {result['frequency']} times")
+        print(f"Draw dates: {', '.join(result['dates'])}")
+    else:
+        print("Combination has never occurred in historical data")
+    
     # Export all analysis results
     analyzer.export_analysis()
-    print("Analysis complete! Results have been exported to the 'analysis_results' directory.")
+    print("\nAnalysis complete! Results have been exported to the 'analysis_results' directory.")
 
 if __name__ == "__main__":
     main() 
