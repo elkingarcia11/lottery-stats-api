@@ -82,17 +82,23 @@ class MegaMillionsAnalyzer:
         return {combo: freq for combo, freq in self.combination_frequencies.items() 
                 if freq >= min_occurrences}
 
-    def get_position_frequencies(self, position: int) -> Dict[int, int]:
-        """Get frequency distribution for a specific position (0-4 for main numbers)."""
-        return dict(self.position_frequencies[position])
+    def get_position_frequencies(self, position: int) -> Dict[int, float]:
+        """Get frequency distribution for a specific position (0-4 for main numbers) as percentages."""
+        frequencies = dict(self.position_frequencies[position])
+        total = sum(frequencies.values())
+        return {num: (freq / total * 100) for num, freq in frequencies.items()}
 
-    def get_megaball_frequencies(self) -> Dict[int, int]:
-        """Get frequency distribution for Mega Ball numbers."""
-        return dict(self.megaball_frequencies)
+    def get_megaball_frequencies(self) -> Dict[int, float]:
+        """Get frequency distribution for Mega Ball numbers as percentages."""
+        frequencies = dict(self.megaball_frequencies)
+        total = sum(frequencies.values())
+        return {num: (freq / total * 100) for num, freq in frequencies.items()}
 
-    def get_general_frequencies(self) -> Dict[int, int]:
-        """Get overall frequency distribution of main numbers."""
-        return dict(self.general_frequencies)
+    def get_general_frequencies(self) -> Dict[int, float]:
+        """Get overall frequency distribution of main numbers as percentages."""
+        frequencies = dict(self.general_frequencies)
+        total = sum(frequencies.values())
+        return {num: (freq / total * 100) for num, freq in frequencies.items()}
 
     def optimize_dataframe(self) -> pd.DataFrame:
         """Create an optimized DataFrame with separate columns for each number."""
@@ -122,48 +128,56 @@ class MegaMillionsAnalyzer:
         
         # Export repeated combinations
         repeated_data = []
+        total_draws = len(self.df)
         for combo, freq in self.get_repeated_combinations().items():
             main_numbers = combo[:-1]
             mega_ball = combo[-1]
             repeated_data.append({
-                'Main_Numbers': ' '.join(map(str, main_numbers)),
+                'Main_Numbers': ' '.join(map(str, sorted(main_numbers))),
                 'Mega_Ball': mega_ball,
-                'Frequency': freq
+                'Frequency': freq,
+                'Percentage': (freq / total_draws * 100)
             })
-        pd.DataFrame(repeated_data).to_csv(f"{output_dir}/mega_millions_repeated_combinations.csv", index=False)
+        pd.DataFrame(repeated_data).sort_values(by=['Main_Numbers', 'Mega_Ball']).to_csv(f"{output_dir}/mega_millions_repeated_combinations.csv", index=False)
         
         # Export position frequencies
         position_data = []
         for pos in range(5):
             frequencies = self.get_position_frequencies(pos)
-            for number, freq in frequencies.items():
+            for number, percentage in sorted(frequencies.items()):
                 position_data.append({
                     'Position': pos + 1,
                     'Number': number,
-                    'Frequency': freq
+                    'Percentage': percentage
                 })
-        pd.DataFrame(position_data).to_csv(f"{output_dir}/mega_millions_position_frequencies.csv", index=False)
+        pd.DataFrame(position_data).sort_values(by=['Position', 'Number']).to_csv(f"{output_dir}/mega_millions_position_frequencies.csv", index=False)
         
         # Export Mega Ball frequencies
         mega_data = []
-        for number, freq in self.get_megaball_frequencies().items():
+        mega_frequencies = self.get_megaball_frequencies()
+        for number, percentage in sorted(mega_frequencies.items()):
             mega_data.append({
                 'Mega_Ball': number,
-                'Frequency': freq
+                'Percentage': percentage
             })
-        pd.DataFrame(mega_data).to_csv(f"{output_dir}/mega_millions_megaball_frequencies.csv", index=False)
+        pd.DataFrame(mega_data).sort_values(by=['Mega_Ball']).to_csv(f"{output_dir}/mega_millions_megaball_frequencies.csv", index=False)
         
         # Export general frequencies
         general_data = []
-        for number, freq in self.get_general_frequencies().items():
+        general_frequencies = self.get_general_frequencies()
+        for number, percentage in sorted(general_frequencies.items()):
             general_data.append({
                 'Number': number,
-                'Frequency': freq
+                'Percentage': percentage
             })
-        pd.DataFrame(general_data).to_csv(f"{output_dir}/mega_millions_general_frequencies.csv", index=False)
+        pd.DataFrame(general_data).sort_values(by=['Number']).to_csv(f"{output_dir}/mega_millions_general_frequencies.csv", index=False)
         
         # Export optimized data
-        self.optimize_dataframe().to_csv(f"{output_dir}/mega_millions_optimized_data.csv", index=False)
+        optimized_df = self.optimize_dataframe()
+        # Sort by date in descending order (most recent first)
+        optimized_df['Draw_Date'] = pd.to_datetime(optimized_df['Draw_Date'])
+        optimized_df = optimized_df.sort_values(by='Draw_Date', ascending=False)
+        optimized_df.to_csv(f"{output_dir}/mega_millions_optimized_data.csv", index=False)
 
     def generate_unique_combination(self) -> Dict:
         """
@@ -198,6 +212,37 @@ class MegaMillionsAnalyzer:
             attempts += 1
         
         return {"error": f"Could not find unique combination after {max_attempts} attempts"}
+
+    def get_latest_numbers(self, limit: int = 100) -> List[Dict]:
+        """
+        Get the latest winning numbers with their dates.
+        
+        Args:
+            limit: Number of recent results to return (default 100)
+            
+        Returns:
+            List of dictionaries containing dates and winning numbers
+        """
+        # Convert Draw Date to datetime for proper sorting
+        self.df['Draw Date'] = pd.to_datetime(self.df['Draw Date'])
+        
+        # Sort by date in descending order and get the latest entries
+        latest_draws = self.df.sort_values('Draw Date', ascending=False).head(limit)
+        
+        # Convert back to string format for JSON serialization
+        latest_draws['Draw Date'] = latest_draws['Draw Date'].dt.strftime('%Y-%m-%d')
+        
+        results = []
+        for _, row in latest_draws.iterrows():
+            numbers = [int(num) for num in row['Winning Numbers'].split()]
+            results.append({
+                'draw_date': row['Draw Date'],
+                'main_numbers': numbers,
+                'mega_ball': int(row['Mega Ball']),
+                'multiplier': row['Multiplier']
+            })
+        
+        return results
 
 def main():
     # Initialize analyzer
