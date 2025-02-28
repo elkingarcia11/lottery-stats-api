@@ -3,6 +3,7 @@ from collections import Counter, defaultdict
 from typing import List, Dict, Tuple
 import os
 import random
+from lottery_analysis import LotteryAnalysis, FrequencyStats
 
 class MegaMillionsAnalyzer:
     def __init__(self, csv_file: str):
@@ -243,6 +244,48 @@ class MegaMillionsAnalyzer:
             })
         
         return results
+
+class MegaMillionsAnalysis(LotteryAnalysis):
+    def __init__(self, csv_file: str = 'mega_millions.csv'):
+        """Initialize Mega Millions analysis."""
+        super().__init__(csv_file)
+        self.special_ball_column = 'Mega Ball'
+        self.number_range = range(1, 71)  # Main numbers range from 1-70
+        self.special_ball_range = range(1, 26)  # Mega Ball numbers range from 1-25
+        
+    def get_analysis(self) -> Dict:
+        """Get comprehensive Mega Millions analysis."""
+        stats = self.get_summary_statistics(self.special_ball_column)
+        
+        # Add Mega Millions specific statistics
+        stats.update({
+            'lottery_type': 'Mega Millions',
+            'main_number_range': (1, 70),
+            'special_ball_range': (1, 25),
+            'coverage_statistics': self.calculate_coverage_statistics()
+        })
+        
+        return stats
+    
+    def calculate_coverage_statistics(self) -> Dict:
+        """Calculate how much of the possible number space has been used."""
+        # Analyze main numbers coverage
+        used_numbers = set()
+        for numbers in self.df['number_list']:
+            used_numbers.update(numbers)
+        
+        main_numbers_coverage = (len(used_numbers) / 70) * 100
+        
+        # Analyze Mega Ball coverage
+        used_mega_balls = set(self.df[self.special_ball_column].astype(int))
+        mega_ball_coverage = (len(used_mega_balls) / 25) * 100
+        
+        return {
+            'main_numbers_coverage': main_numbers_coverage,
+            'mega_ball_coverage': mega_ball_coverage,
+            'unused_main_numbers': sorted(set(range(1, 71)) - used_numbers),
+            'unused_mega_balls': sorted(set(range(1, 26)) - used_mega_balls)
+        }
 
 def main():
     # Initialize analyzer

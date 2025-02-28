@@ -3,6 +3,7 @@ from collections import Counter, defaultdict
 from typing import List, Dict, Tuple
 import os
 import random
+from lottery_analysis import LotteryAnalysis, FrequencyStats
 
 class PowerballAnalyzer:
     def __init__(self, csv_file: str):
@@ -239,6 +240,48 @@ class PowerballAnalyzer:
             })
         
         return results
+
+class PowerballAnalysis(LotteryAnalysis):
+    def __init__(self, csv_file: str = 'powerball.csv'):
+        """Initialize Powerball analysis."""
+        super().__init__(csv_file)
+        self.special_ball_column = 'Powerball Ball'
+        self.number_range = range(1, 70)  # Main numbers range from 1-69
+        self.special_ball_range = range(1, 27)  # Powerball numbers range from 1-26
+        
+    def get_analysis(self) -> Dict:
+        """Get comprehensive Powerball analysis."""
+        stats = self.get_summary_statistics(self.special_ball_column)
+        
+        # Add Powerball specific statistics
+        stats.update({
+            'lottery_type': 'Powerball',
+            'main_number_range': (1, 69),
+            'special_ball_range': (1, 26),
+            'coverage_statistics': self.calculate_coverage_statistics()
+        })
+        
+        return stats
+    
+    def calculate_coverage_statistics(self) -> Dict:
+        """Calculate how much of the possible number space has been used."""
+        # Analyze main numbers coverage
+        used_numbers = set()
+        for numbers in self.df['number_list']:
+            used_numbers.update(numbers)
+        
+        main_numbers_coverage = (len(used_numbers) / 69) * 100
+        
+        # Analyze Powerball coverage
+        used_powerballs = set(self.df[self.special_ball_column].astype(int))
+        powerball_coverage = (len(used_powerballs) / 26) * 100
+        
+        return {
+            'main_numbers_coverage': main_numbers_coverage,
+            'powerball_coverage': powerball_coverage,
+            'unused_main_numbers': sorted(set(range(1, 70)) - used_numbers),
+            'unused_powerballs': sorted(set(range(1, 27)) - used_powerballs)
+        }
 
 def main():
     # Initialize analyzer
