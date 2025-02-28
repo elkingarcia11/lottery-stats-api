@@ -30,17 +30,19 @@ The API provides real-time access to lottery statistics and analysis through RES
 http://localhost:8000
 ```
 
-#### Endpoints
+#### API Reference
 
 1. **Number Frequencies**
+```http
+GET /{lottery_type}/number-frequencies?category={category}
 ```
-GET /{lottery_type}/number-frequencies
-```
-- Get frequency statistics for all numbers in a lottery
-- Parameters:
-  - `lottery_type`: "mega-millions" or "powerball"
-  - `category`: "main" or "special" (query parameter)
-- Response Example:
+Parameters:
+- Path:
+  - `lottery_type`: (string, required) - "mega-millions" or "powerball"
+- Query:
+  - `category`: (string, required) - "main" or "special"
+
+Response:
 ```json
 [
   {
@@ -48,19 +50,25 @@ GET /{lottery_type}/number-frequencies
     "count": 150,
     "percentage": 2.5
   },
-  // ... more numbers
+  {
+    "number": 2,
+    "count": 142,
+    "percentage": 2.3
+  }
 ]
 ```
 
 2. **Position Frequencies**
+```http
+GET /{lottery_type}/position-frequencies?position={position}
 ```
-GET /{lottery_type}/position-frequencies
-```
-- Get position-specific frequency statistics
-- Parameters:
-  - `lottery_type`: "mega-millions" or "powerball"
-  - `position`: 1-5 (optional query parameter)
-- Response Example:
+Parameters:
+- Path:
+  - `lottery_type`: (string, required) - "mega-millions" or "powerball"
+- Query:
+  - `position`: (integer, optional) - Position number (1-5)
+
+Response:
 ```json
 [
   {
@@ -69,25 +77,31 @@ GET /{lottery_type}/position-frequencies
     "count": 30,
     "percentage": 1.5
   },
-  // ... more positions/numbers
+  {
+    "position": 1,
+    "number": 2,
+    "count": 28,
+    "percentage": 1.4
+  }
 ]
 ```
 
 3. **Check Combination**
-```
+```http
 POST /{lottery_type}/check-combination
 ```
-- Check if a combination exists in historical data
-- Parameters:
-  - `lottery_type`: "mega-millions" or "powerball"
-  - Request Body:
+Parameters:
+- Path:
+  - `lottery_type`: (string, required) - "mega-millions" or "powerball"
+- Request Body:
 ```json
 {
     "numbers": [1, 2, 3, 4, 5],
     "special_ball": 10  // Optional
 }
 ```
-- Response Example:
+
+Response:
 ```json
 {
     "exists": true,
@@ -99,13 +113,14 @@ POST /{lottery_type}/check-combination
 ```
 
 4. **Generate Optimized Combination**
-```
+```http
 GET /{lottery_type}/generate-optimized
 ```
-- Generate a combination that maximizes position-specific frequencies while ensuring it hasn't appeared before
-- Parameters:
-  - `lottery_type`: "mega-millions" or "powerball"
-- Response Example:
+Parameters:
+- Path:
+  - `lottery_type`: (string, required) - "mega-millions" or "powerball"
+
+Response:
 ```json
 {
     "main_numbers": [12, 23, 34, 45, 56],
@@ -122,13 +137,14 @@ GET /{lottery_type}/generate-optimized
 ```
 
 5. **Generate Random Combination**
-```
+```http
 GET /{lottery_type}/generate-random
 ```
-- Generate a random combination that hasn't appeared in historical data
-- Parameters:
-  - `lottery_type`: "mega-millions" or "powerball"
-- Response Example:
+Parameters:
+- Path:
+  - `lottery_type`: (string, required) - "mega-millions" or "powerball"
+
+Response:
 ```json
 {
     "main_numbers": [7, 13, 25, 41, 68],
@@ -137,6 +153,40 @@ GET /{lottery_type}/generate-random
 }
 ```
 
+#### Error Responses
+
+All endpoints may return the following error responses:
+
+400 Bad Request:
+```json
+{
+    "detail": "Invalid input message"
+}
+```
+
+500 Internal Server Error:
+```json
+{
+    "detail": "Error message"
+}
+```
+
+Common error cases:
+- Invalid lottery type
+- Invalid number ranges
+- Non-unique numbers
+- Invalid position number
+- Unable to generate unique combination
+
+#### Rate Limiting
+- Maximum 100 requests per minute per IP address
+- Exceeding the limit returns a 429 Too Many Requests response
+
+#### CORS
+- API supports Cross-Origin Resource Sharing (CORS)
+- All origins are allowed for development purposes
+- Configure allowed origins in production
+
 #### Input Validation
 - Mega Millions:
   - Main numbers: 5 unique numbers between 1 and 70
@@ -144,10 +194,6 @@ GET /{lottery_type}/generate-random
 - Powerball:
   - Main numbers: 5 unique numbers between 1 and 69
   - Powerball: 1 number between 1 and 26
-
-#### Error Responses
-- 400: Bad Request (invalid input)
-- 500: Internal Server Error
 
 #### API Documentation
 - Swagger UI: `http://localhost:8000/docs`
