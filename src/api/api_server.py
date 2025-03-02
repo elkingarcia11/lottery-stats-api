@@ -136,7 +136,11 @@ async def check_combination(lottery_type: LotteryType, request: CombinationReque
     """Check if a combination exists in historical data."""
     try:
         analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
-        df = analysis.df
+        df = analysis.df.copy()  # Create a copy to avoid modifying original
+        
+        # Convert Draw Date to string format if it's not already
+        if pd.api.types.is_datetime64_any_dtype(df['Draw Date']):
+            df['Draw Date'] = df['Draw Date'].dt.strftime('%Y-%m-%d')
         
         # Convert main numbers to string format for comparison
         main_numbers_str = ' '.join(map(str, sorted(request.numbers)))
@@ -165,7 +169,7 @@ async def check_combination(lottery_type: LotteryType, request: CombinationReque
                 exact_match_found = True
                 
             matches_list.append({
-                'date': row['Draw Date'],
+                'date': str(row['Draw Date']),  # Ensure date is string
                 'special_ball': row_special_ball,
                 'prize': row.get('Prize', None)  # Include prize if available
             })
