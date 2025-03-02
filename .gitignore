@@ -1,2 +1,9 @@
 __pycache__
-analysis_results
+data
+venv
+src/analysis/__pycache__
+src/api/__pycache__
+src/collection/__pycache__
+src/data/__pycache__
+src/models/__pycache__
+src/utils/__pycache__

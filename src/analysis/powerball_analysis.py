@@ -3,15 +3,18 @@ from collections import Counter, defaultdict
 from typing import List, Dict, Tuple
 import os
 import random
-from lottery_analysis import LotteryAnalysis, FrequencyStats
+from src.analysis.lottery_analysis import LotteryAnalysis, FrequencyStats
 
-class MegaMillionsAnalyzer:
+# Constants
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'raw')
+
+class PowerballAnalyzer:
     def __init__(self, csv_file: str):
-        """Initialize the MegaMillionsAnalyzer with the CSV file path."""
-        self.df = pd.read_csv(csv_file)
+        """Initialize the PowerballAnalyzer with the CSV file path."""
+        self.df = pd.read_csv(os.path.join(DATA_DIR, csv_file))
         self.position_frequencies = defaultdict(Counter)
         self.general_frequencies = Counter()
-        self.megaball_frequencies = Counter()
+        self.powerball_frequencies = Counter()  # New counter for Powerball numbers
         self.combination_frequencies = Counter()
         self.process_data()
 
@@ -20,62 +23,58 @@ class MegaMillionsAnalyzer:
         for _, row in self.df.iterrows():
             # Split the winning numbers string into a list of numbers
             numbers = [int(num) for num in row['Winning Numbers'].split()]
-            megaball = int(row['Mega Ball'])
-            
-            # Create full combination including Mega Ball
-            full_combination = tuple(numbers + [megaball])
+            main_numbers = numbers[:5]  # First 5 numbers
+            powerball = numbers[5]      # Last number is Powerball
             
             # Track combination frequencies
-            self.combination_frequencies[full_combination] += 1
+            self.combination_frequencies[tuple(numbers)] += 1
             
             # Track position frequencies for main numbers
-            for pos, num in enumerate(numbers):
+            for pos, num in enumerate(main_numbers):
                 self.position_frequencies[pos][num] += 1
                 
-            # Track Mega Ball frequencies separately
-            self.megaball_frequencies[megaball] += 1
+            # Track Powerball frequencies separately
+            self.powerball_frequencies[powerball] += 1
                 
-            # Track general frequencies (excluding Mega Ball)
-            self.general_frequencies.update(numbers)
+            # Track general frequencies (excluding Powerball)
+            self.general_frequencies.update(main_numbers)
 
-    def check_combination(self, numbers: List[int], megaball: int) -> Dict:
+    def check_combination(self, numbers: List[int]) -> Dict:
         """
         Check if a combination exists in historical data.
         
         Args:
-            numbers: List of 5 integers for main numbers
-            megaball: Integer for the Mega Ball number
+            numbers: List of 6 integers where first 5 are main numbers and last is Powerball
             
         Returns:
             Dictionary containing existence info and frequency if found
         """
-        if len(numbers) != 5:
-            return {"error": "Invalid combination. Must provide 5 main numbers"}
+        if len(numbers) != 6:
+            return {"error": "Invalid combination. Must provide 6 numbers (5 main numbers + Powerball)"}
         
-        full_combination = tuple(numbers + [megaball])
-        frequency = self.combination_frequencies.get(full_combination, 0)
+        combo_tuple = tuple(numbers)
+        frequency = self.combination_frequencies.get(combo_tuple, 0)
         
         if frequency > 0:
             # Find the dates this combination occurred
             dates = []
             for _, row in self.df.iterrows():
                 row_numbers = [int(num) for num in row['Winning Numbers'].split()]
-                row_megaball = int(row['Mega Ball'])
-                if tuple(row_numbers + [row_megaball]) == full_combination:
+                if tuple(row_numbers) == combo_tuple:
                     dates.append(row['Draw Date'])
             
             return {
                 "exists": True,
                 "frequency": frequency,
                 "dates": dates,
-                "main_numbers": numbers,
-                "mega_ball": megaball
+                "main_numbers": numbers[:5],
+                "powerball": numbers[5]
             }
         else:
             return {
                 "exists": False,
-                "main_numbers": numbers,
-                "mega_ball": megaball
+                "main_numbers": numbers[:5],
+                "powerball": numbers[5]
             }
 
     def get_repeated_combinations(self, min_occurrences: int = 2) -> Dict[Tuple[int, ...], int]:
@@ -89,14 +88,14 @@ class MegaMillionsAnalyzer:
         total = sum(frequencies.values())
         return {num: (freq / total * 100) for num, freq in frequencies.items()}
 
-    def get_megaball_frequencies(self) -> Dict[int, float]:
-        """Get frequency distribution for Mega Ball numbers as percentages."""
-        frequencies = dict(self.megaball_frequencies)
+    def get_powerball_frequencies(self) -> Dict[int, float]:
+        """Get frequency distribution for Powerball numbers as percentages."""
+        frequencies = dict(self.powerball_frequencies)
         total = sum(frequencies.values())
         return {num: (freq / total * 100) for num, freq in frequencies.items()}
 
     def get_general_frequencies(self) -> Dict[int, float]:
-        """Get overall frequency distribution of main numbers as percentages."""
+        """Get overall frequency distribution of main numbers (excluding Powerball) as percentages."""
         frequencies = dict(self.general_frequencies)
         total = sum(frequencies.values())
         return {num: (freq / total * 100) for num, freq in frequencies.items()}
@@ -114,9 +113,9 @@ class MegaMillionsAnalyzer:
                 'Number_3': numbers[2],
                 'Number_4': numbers[3],
                 'Number_5': numbers[4],
-                'Mega_Ball': int(row['Mega Ball']),
+                'Powerball': numbers[5],
                 'Multiplier': row['Multiplier'],
-                'Original_Combination': f"{row['Winning Numbers']} MB:{row['Mega Ball']}"
+                'Original_Combination': row['Winning Numbers']
             }
             optimized_data.append(entry)
             
@@ -131,19 +130,19 @@ class MegaMillionsAnalyzer:
         repeated_data = []
         total_draws = len(self.df)
         for combo, freq in self.get_repeated_combinations().items():
-            main_numbers = combo[:-1]
-            mega_ball = combo[-1]
+            main_numbers = combo[:5]
+            powerball = combo[5]
             repeated_data.append({
                 'Main_Numbers': ' '.join(map(str, sorted(main_numbers))),
-                'Mega_Ball': mega_ball,
+                'Powerball': powerball,
                 'Frequency': freq,
                 'Percentage': (freq / total_draws * 100)
             })
-        pd.DataFrame(repeated_data).sort_values(by=['Main_Numbers', 'Mega_Ball']).to_csv(f"{output_dir}/mega_millions_repeated_combinations.csv", index=False)
+        pd.DataFrame(repeated_data).sort_values(by=['Main_Numbers', 'Powerball']).to_csv(f"{output_dir}/powerball_repeated_combinations.csv", index=False)
         
         # Export position frequencies
         position_data = []
-        for pos in range(5):
+        for pos in range(5):  # Only main numbers positions
             frequencies = self.get_position_frequencies(pos)
             for number, percentage in sorted(frequencies.items()):
                 position_data.append({
@@ -151,17 +150,17 @@ class MegaMillionsAnalyzer:
                     'Number': number,
                     'Percentage': percentage
                 })
-        pd.DataFrame(position_data).sort_values(by=['Position', 'Number']).to_csv(f"{output_dir}/mega_millions_position_frequencies.csv", index=False)
+        pd.DataFrame(position_data).sort_values(by=['Position', 'Number']).to_csv(f"{output_dir}/powerball_position_frequencies.csv", index=False)
         
-        # Export Mega Ball frequencies
-        mega_data = []
-        mega_frequencies = self.get_megaball_frequencies()
-        for number, percentage in sorted(mega_frequencies.items()):
-            mega_data.append({
-                'Mega_Ball': number,
+        # Export Powerball frequencies
+        powerball_data = []
+        powerball_frequencies = self.get_powerball_frequencies()
+        for number, percentage in sorted(powerball_frequencies.items()):
+            powerball_data.append({
+                'Powerball': number,
                 'Percentage': percentage
             })
-        pd.DataFrame(mega_data).sort_values(by=['Mega_Ball']).to_csv(f"{output_dir}/mega_millions_megaball_frequencies.csv", index=False)
+        pd.DataFrame(powerball_data).sort_values(by=['Powerball']).to_csv(f"{output_dir}/powerball_specific_frequencies.csv", index=False)
         
         # Export general frequencies
         general_data = []
@@ -171,22 +170,22 @@ class MegaMillionsAnalyzer:
                 'Number': number,
                 'Percentage': percentage
             })
-        pd.DataFrame(general_data).sort_values(by=['Number']).to_csv(f"{output_dir}/mega_millions_general_frequencies.csv", index=False)
+        pd.DataFrame(general_data).sort_values(by=['Number']).to_csv(f"{output_dir}/powerball_general_frequencies.csv", index=False)
         
         # Export optimized data
         optimized_df = self.optimize_dataframe()
         # Sort by date in descending order (most recent first)
         optimized_df['Draw_Date'] = pd.to_datetime(optimized_df['Draw_Date'])
         optimized_df = optimized_df.sort_values(by='Draw_Date', ascending=False)
-        optimized_df.to_csv(f"{output_dir}/mega_millions_optimized_data.csv", index=False)
+        optimized_df.to_csv(f"{output_dir}/powerball_optimized_data.csv", index=False)
 
     def generate_unique_combination(self) -> Dict:
         """
         Generate a random combination that has never appeared in historical data.
         
-        For Mega Millions:
-        - Main numbers: 1-70
-        - Mega Ball number: 1-25
+        For Powerball:
+        - Main numbers: 1-69
+        - Powerball number: 1-26
         - Numbers must be unique for main numbers
         
         Returns:
@@ -196,17 +195,17 @@ class MegaMillionsAnalyzer:
         attempts = 0
         
         while attempts < max_attempts:
-            # Generate 5 unique main numbers between 1-70
-            main_numbers = sorted(random.sample(range(1, 71), 5))
-            # Generate Mega Ball number between 1-25
-            megaball = random.randint(1, 25)
+            # Generate 5 unique main numbers between 1-69
+            main_numbers = sorted(random.sample(range(1, 70), 5))
+            # Generate Powerball number between 1-26
+            powerball = random.randint(1, 26)
             
             # Check if this combination exists
-            result = self.check_combination(main_numbers, megaball)
+            result = self.check_combination(main_numbers + [powerball])
             if not result["exists"]:
                 return {
                     "main_numbers": main_numbers,
-                    "mega_ball": megaball,
+                    "powerball": powerball,
                     "attempts_needed": attempts + 1
                 }
             
@@ -238,41 +237,33 @@ class MegaMillionsAnalyzer:
             numbers = [int(num) for num in row['Winning Numbers'].split()]
             results.append({
                 'draw_date': row['Draw Date'],
-                'main_numbers': numbers,
-                'mega_ball': int(row['Mega Ball']),
+                'main_numbers': numbers[:5],
+                'powerball': numbers[5],
                 'multiplier': row['Multiplier']
             })
         
         return results
 
-class MegaMillionsAnalysis(LotteryAnalysis):
-    def __init__(self, csv_file: str = 'mega_millions.csv'):
-        """Initialize the Mega Millions analysis."""
-        self.csv_file = csv_file
-        self.special_ball_column = 'Mega Ball'
-        
-        # Load and sort the data
-        self.df = pd.read_csv(csv_file)
-        
-        # Ensure data is sorted by date (most recent first)
-        self.df['Draw Date'] = pd.to_datetime(self.df['Draw Date'])
-        self.df = self.df.sort_values('Draw Date', ascending=False)
-        self.df['Draw Date'] = self.df['Draw Date'].dt.strftime('%Y-%m-%d')
+class PowerballAnalysis(LotteryAnalysis):
+    def __init__(self, csv_file: str = 'powerball.csv'):
+        """Initialize the analysis with the CSV file path."""
+        super().__init__(csv_file)
+        self.special_ball_column = 'Powerball Ball'
         
         # Initialize analysis
         self._analysis = None
-        self.special_ball_range = (1, 25)  # Mega Ball range
-        self.main_numbers_range = (1, 70)  # Main numbers range
+        self.special_ball_range = (1, 26)  # Powerball range
+        self.main_numbers_range = (1, 69)  # Main numbers range
 
     def get_analysis(self) -> Dict:
-        """Get comprehensive Mega Millions analysis."""
+        """Get comprehensive Powerball analysis."""
         stats = self.get_summary_statistics(self.special_ball_column)
         
-        # Add Mega Millions specific statistics
+        # Add Powerball specific statistics
         stats.update({
-            'lottery_type': 'Mega Millions',
-            'main_number_range': (1, 70),
-            'special_ball_range': (1, 25),
+            'lottery_type': 'Powerball',
+            'main_number_range': (1, 69),
+            'special_ball_range': (1, 26),
             'coverage_statistics': self.calculate_coverage_statistics()
         })
         
@@ -285,22 +276,22 @@ class MegaMillionsAnalysis(LotteryAnalysis):
         for numbers in self.df['number_list']:
             used_numbers.update(numbers)
         
-        main_numbers_coverage = (len(used_numbers) / 70) * 100
+        main_numbers_coverage = (len(used_numbers) / 69) * 100
         
-        # Analyze Mega Ball coverage
-        used_mega_balls = set(self.df[self.special_ball_column].astype(int))
-        mega_ball_coverage = (len(used_mega_balls) / 25) * 100
+        # Analyze Powerball coverage
+        used_powerballs = set(self.df[self.special_ball_column].astype(int))
+        powerball_coverage = (len(used_powerballs) / 26) * 100
         
         return {
             'main_numbers_coverage': main_numbers_coverage,
-            'mega_ball_coverage': mega_ball_coverage,
-            'unused_main_numbers': sorted(set(range(1, 71)) - used_numbers),
-            'unused_mega_balls': sorted(set(range(1, 26)) - used_mega_balls)
+            'powerball_coverage': powerball_coverage,
+            'unused_main_numbers': sorted(set(range(1, 70)) - used_numbers),
+            'unused_powerballs': sorted(set(range(1, 27)) - used_powerballs)
         }
 
 def main():
     # Initialize analyzer
-    analyzer = MegaMillionsAnalyzer('mega_million.csv')
+    analyzer = PowerballAnalyzer('powerball.csv')
     
     # Generate and check a unique combination
     print("\nGenerating a unique combination that has never occurred...")
@@ -308,7 +299,7 @@ def main():
     if "error" not in unique_combo:
         print(f"Found unique combination after {unique_combo['attempts_needed']} attempts:")
         print(f"Main numbers: {unique_combo['main_numbers']}")
-        print(f"Mega Ball: {unique_combo['mega_ball']}")
+        print(f"Powerball: {unique_combo['powerball']}")
     else:
         print(unique_combo["error"])
     

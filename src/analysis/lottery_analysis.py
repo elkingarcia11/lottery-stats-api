@@ -3,6 +3,10 @@ from collections import Counter, defaultdict
 from typing import List, Dict, Tuple, Set
 import numpy as np
 from dataclasses import dataclass
+import os
+
+# Constants
+DATA_DIR = 'data/raw'
 
 @dataclass
 class FrequencyStats:
@@ -12,7 +16,7 @@ class FrequencyStats:
 class LotteryAnalysis:
     def __init__(self, csv_file: str):
         """Initialize the analysis with a CSV file containing lottery data."""
-        self.df = pd.read_csv(csv_file)
+        self.df = pd.read_csv(os.path.join(DATA_DIR, csv_file))
         self.total_draws = len(self.df)
         
         # Convert winning numbers from space-separated string to list of integers

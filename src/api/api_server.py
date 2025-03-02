@@ -1,8 +1,13 @@
 from fastapi import FastAPI, HTTPException, Query
 from typing import List, Dict, Optional, Annotated, Any
 from pydantic import BaseModel, conlist
-from mega_millions_analysis import MegaMillionsAnalysis
-from powerball_analysis import PowerballAnalysis
+import sys
+import os
+
+# Add the parent directory to Python path to find the analysis modules
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from analysis.mega_millions_analysis import MegaMillionsAnalysis
+from analysis.powerball_analysis import PowerballAnalysis
 from enum import Enum
 import uvicorn
 import random

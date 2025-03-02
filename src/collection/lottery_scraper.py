@@ -10,6 +10,10 @@ import os
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Constants
+DATA_DIR = 'data/raw'
+DEBUG_DIR = 'data/debug'
+
 def create_session_with_retries() -> requests.Session:
     """Create a session with retry strategy."""
     session = requests.Session()
@@ -29,7 +33,7 @@ def create_session_with_retries() -> requests.Session:
     
     return session
 
-def extract_numbers_from_row(row, min_date=None):
+def extract_numbers_from_row(row, min_date=None, lottery_type='powerball'):
     try:
         # Extract date from the first td
         date_td = row.find('td')
@@ -56,8 +60,8 @@ def extract_numbers_from_row(row, min_date=None):
         if not numbers_td:
             return None
             
-        # Get all ul elements with class 'multi results powerball'
-        results_lists = numbers_td.find_all('ul', class_='multi results powerball')
+        # Get all ul elements with class 'multi results powerball' or 'multi results mega-millions'
+        results_lists = numbers_td.find_all('ul', class_=f'multi results {lottery_type}')
         if not results_lists:
             return None
             
@@ -66,7 +70,7 @@ def extract_numbers_from_row(row, min_date=None):
         
         # Extract all ball elements
         balls = []
-        powerball = None
+        special_ball = None
         multiplier = None
         
         # Get all direct li children of the first results list
@@ -78,30 +82,30 @@ def extract_numbers_from_row(row, min_date=None):
             if not text:
                 continue
                 
-            if 'ball' in li.get('class') and 'powerball' not in li.get('class'):
+            if 'ball' in li.get('class') and 'mega-ball' not in li.get('class') and 'powerball' not in li.get('class'):
                 if len(balls) < 5:  # Only take first 5 balls
                     balls.append(text)
-            elif 'powerball' in li.get('class'):
-                powerball = text
-            elif 'power-play' in li.get('class'):
+            elif 'powerball' in li.get('class') or 'mega-ball' in li.get('class'):
+                special_ball = text
+            elif 'power-play' in li.get('class') or 'megaplier' in li.get('class'):
                 multiplier = text
         
         # Validate we have the correct number of balls
-        if len(balls) != 5 or not powerball:
-            print(f"Invalid number of balls for {date_str}: {len(balls)} regular balls, powerball: {powerball}")
+        if len(balls) != 5 or not special_ball:
+            print(f"Invalid number of balls for {date_str}: {len(balls)} regular balls, special ball: {special_ball}")
             return None
             
         return {
             'date': draw_date,
             'winning_numbers': balls,
-            'special_ball': powerball,
+            'special_ball': special_ball,
             'multiplier': multiplier if multiplier else "1"
         }
     except Exception as e:
         print(f"Error processing row: {e}")
         return None
 
-def scrape_lottery(year: int, lottery_type: Literal['mega-millions', 'powerball'], min_date: datetime = None):
+def scrape_lottery(year: int, lottery_type: Literal['mega-millions', 'powerball'], min_date: datetime = None, debug: bool = False):
     """
     Scrape lottery data for a specific year and lottery type
     
@@ -109,6 +113,7 @@ def scrape_lottery(year: int, lottery_type: Literal['mega-millions', 'powerball'
         year: The year to scrape
         lottery_type: Type of lottery ('mega-millions' or 'powerball')
         min_date: Optional minimum date to include (datetime object)
+        debug: Whether to save debug HTML files
     """
     url = f"https://www.lottery.net/{lottery_type}/numbers/{year}"
     headers = {
@@ -138,9 +143,11 @@ def scrape_lottery(year: int, lottery_type: Literal['mega-millions', 'powerball'
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Debug: Save HTML content to file
-        with open(f'debug_{year}.html', 'w', encoding='utf-8') as f:
-            f.write(soup.prettify())
+        # Debug: Save HTML content to file if debug flag is enabled
+        if debug:
+            os.makedirs(DEBUG_DIR, exist_ok=True)
+            with open(os.path.join(DEBUG_DIR, f'debug_{year}.html'), 'w', encoding='utf-8') as f:
+                f.write(soup.prettify())
             
         data = []
         
@@ -156,7 +163,7 @@ def scrape_lottery(year: int, lottery_type: Literal['mega-millions', 'powerball'
             
             for row in draw_rows:
                 try:
-                    row_data = extract_numbers_from_row(row, min_date)
+                    row_data = extract_numbers_from_row(row, min_date, lottery_type)
                     if row_data:
                         data.append(row_data)
                 except Exception as e:
@@ -171,14 +178,14 @@ def scrape_lottery(year: int, lottery_type: Literal['mega-millions', 'powerball'
             for row in all_rows:
                 # Check if row has the correct structure (two td cells, one with a date link)
                 tds = row.find_all('td')
-                if len(tds) == 2 and tds[0].find('a') and tds[1].find('ul', class_='multi results powerball'):
+                if len(tds) == 2 and tds[0].find('a') and tds[1].find('ul', class_=f'multi results {lottery_type}'):
                     valid_rows.append(row)
             
             print(f"Found {len(valid_rows)} potential draws for {year}")
             
             for row in valid_rows:
                 try:
-                    row_data = extract_numbers_from_row(row, min_date)
+                    row_data = extract_numbers_from_row(row, min_date, lottery_type)
                     if row_data:
                         data.append(row_data)
                 except Exception as e:
@@ -196,7 +203,7 @@ def scrape_lottery(year: int, lottery_type: Literal['mega-millions', 'powerball'
         print(f"Unexpected error for {year}: {str(e)}")
         return []
 
-def update_lottery_data(lottery_type: str, start_date: str = None):
+def update_lottery_data(lottery_type: str, start_date: str = None, debug: bool = False):
     """
     Update lottery data from a specific date, appending to existing CSV.
     If no CSV exists or is empty, performs a full historical scrape.
@@ -205,8 +212,12 @@ def update_lottery_data(lottery_type: str, start_date: str = None):
     Args:
         lottery_type: Type of lottery ('mega-millions' or 'powerball')
         start_date: Optional date string in YYYY-mm-dd format
+        debug: Whether to save debug HTML files
     """
-    filename = f"{lottery_type}.csv"
+    # Ensure data directory exists
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
+    filename = os.path.join(DATA_DIR, f"{lottery_type}.csv")
     current_year = datetime.now().year
     
     # Read existing data if file exists
@@ -241,7 +252,8 @@ def update_lottery_data(lottery_type: str, start_date: str = None):
     new_data = []
     for year in range(start_year, current_year + 1):
         year_data = scrape_lottery(year, lottery_type, 
-                                 datetime.strptime(start_date, '%Y-%m-%d') if start_date else None)
+                                 datetime.strptime(start_date, '%Y-%m-%d') if start_date else None,
+                                 debug=debug)
         if year_data:
             new_data.extend(year_data)
             time.sleep(1)  # Small delay between years
@@ -294,9 +306,11 @@ def main():
                       help='Type of lottery to scrape')
     parser.add_argument('--start-date', type=str, required=False,
                       help='Optional: Start date in YYYY-MM-DD format. If not provided, uses latest date from existing CSV')
+    parser.add_argument('--debug', action='store_true',
+                      help='Enable debug mode to save HTML files')
     args = parser.parse_args()
     
-    update_lottery_data(args.lottery_type, args.start_date)
+    update_lottery_data(args.lottery_type, args.start_date, args.debug)
 
 if __name__ == "__main__":
     main() 
