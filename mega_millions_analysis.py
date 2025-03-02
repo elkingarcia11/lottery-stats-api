@@ -247,12 +247,23 @@ class MegaMillionsAnalyzer:
 
 class MegaMillionsAnalysis(LotteryAnalysis):
     def __init__(self, csv_file: str = 'mega_millions.csv'):
-        """Initialize Mega Millions analysis."""
-        super().__init__(csv_file)
+        """Initialize the Mega Millions analysis."""
+        self.csv_file = csv_file
         self.special_ball_column = 'Mega Ball'
-        self.number_range = range(1, 71)  # Main numbers range from 1-70
-        self.special_ball_range = range(1, 26)  # Mega Ball numbers range from 1-25
         
+        # Load and sort the data
+        self.df = pd.read_csv(csv_file)
+        
+        # Ensure data is sorted by date (most recent first)
+        self.df['Draw Date'] = pd.to_datetime(self.df['Draw Date'])
+        self.df = self.df.sort_values('Draw Date', ascending=False)
+        self.df['Draw Date'] = self.df['Draw Date'].dt.strftime('%Y-%m-%d')
+        
+        # Initialize analysis
+        self._analysis = None
+        self.special_ball_range = (1, 25)  # Mega Ball range
+        self.main_numbers_range = (1, 70)  # Main numbers range
+
     def get_analysis(self) -> Dict:
         """Get comprehensive Mega Millions analysis."""
         stats = self.get_summary_statistics(self.special_ball_column)

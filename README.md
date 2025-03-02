@@ -1,6 +1,6 @@
 # Lottery Stats API
 
-A Python-based system for collecting, analyzing, and serving historical lottery data from lottery.net.
+A Python-based system for collecting historical lottery data from lottery.net.
 
 ## Features
 
@@ -8,9 +8,20 @@ A Python-based system for collecting, analyzing, and serving historical lottery 
 - Scrapes historical lottery data for:
   - Mega Millions (from 1996 to present)
   - Powerball (from 1992 to present)
-- Handles format changes in lottery data presentation
+- Handles format changes in lottery data presentation:
+  - Pre-2021: Table-based structure
+  - Post-2021: Flexible row-based parsing with Double Play support
 - Exports data to CSV files with consistent formatting
-- Includes error handling and rate limiting
+- Includes error handling and retry mechanism:
+  - Automatic retries with exponential backoff
+  - Maximum 3 retries per request
+  - Configurable timeout and backoff settings
+- Smart data update system:
+  - Automatically detects and updates from the latest entry in existing CSV files
+  - Performs full historical scrape for new or empty files
+  - Optional manual start date override with `--start-date` parameter
+  - Maintains data sorted by date (newest first)
+  - Prevents duplicate entries
 
 ### Analysis Features
 - Comprehensive statistical analysis:
@@ -108,9 +119,27 @@ Response:
     "frequency": 2,
     "dates": ["01/01/2020", "03/15/2021"],
     "main_numbers": [1, 2, 3, 4, 5],
-    "special_ball": 10
+    "special_ball": 10,
+    "matches": [
+        {
+            "date": "01/01/2020",
+            "special_ball": 10,
+            "prize": "1,000,000"
+        },
+        {
+            "date": "03/15/2021",
+            "special_ball": 12,
+            "prize": "500,000"
+        }
+    ]
 }
 ```
+
+Notes:
+- When only main numbers are provided (no special_ball), the endpoint returns all matching combinations with their respective special balls and dates
+- The `matches` array provides detailed information about each occurrence including the special ball and prize (if available)
+- Main numbers are always returned in sorted order
+- If no matches are found, `frequency` will be 0 and `matches` will be null
 
 4. **Generate Optimized Combination**
 ```http
@@ -152,6 +181,38 @@ Response:
     "is_unique": true
 }
 ```
+
+6. **Latest Winning Combinations**
+```http
+GET /{lottery_type}/latest-combinations?page={page}&page_size={page_size}
+```
+Parameters:
+- Path:
+  - `lottery_type`: (string, required) - "mega-millions" or "powerball"
+- Query:
+  - `page`: (integer, optional, default: 1) - Page number for pagination
+  - `page_size`: (integer, optional, default: 20, max: 50) - Number of combinations per page
+
+Response:
+```json
+{
+    "combinations": [
+        {
+            "draw_date": "2024-03-21",
+            "main_numbers": [1, 2, 3, 4, 5],
+            "special_ball": 10,
+            "prize": "1,000,000"
+        }
+    ],
+    "total_count": 100,
+    "has_more": true
+}
+```
+Notes:
+- Results are sorted by draw date (newest first)
+- Main numbers are always returned in sorted order
+- `has_more` indicates if there are more pages available
+- `prize` field is optional and may not be available for all draws
 
 #### Error Responses
 
@@ -199,146 +260,70 @@ Common error cases:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/lottostats-api.git
-cd lottostats-api
-```
-
-2. Install the required dependencies:
-```bash
-pip install -r requirements.txt
-```
-
 ## Usage
 
 ### Data Collection
 
-The scraper can be run for either Mega Millions or Powerball:
+To scrape lottery data, use the `lottery_scraper.py` script:
 
 ```bash
-# For Mega Millions
-python lottery_scraper.py mega-millions
+# Scrape Powerball data
+python lottery_scraper.py powerball [--start-date YYYY-MM-DD]
 
-# For Powerball
-python lottery_scraper.py powerball
+# Scrape Mega Millions data
+python lottery_scraper.py mega-millions [--start-date YYYY-MM-DD]
 ```
 
-### Data Analysis
+Options:
+- `--start-date`: Optional. Specify a start date in YYYY-MM-DD format. If not provided, the scraper will:
+  - For new/empty files: Scrape all available historical data
+  - For existing files: Update from the latest entry
 
-Run the comprehensive analysis for both lotteries:
+### Output Format
 
+The scraper generates CSV files with the following format:
+
+```
+Draw Date,Numbers,Powerball/Mega Ball
+YYYY-MM-DD,"1 2 3 4 5",10
+```
+
+- `Draw Date`: Date of the lottery draw in YYYY-MM-DD format
+- `Numbers`: Five main numbers separated by spaces
+- `Powerball/Mega Ball`: The special ball number (Powerball or Mega Ball)
+
+## Requirements
+
+- Python 3.7+
+- Required packages:
+  - requests
+  - beautifulsoup4
+  - pandas
+  - urllib3
+
+Install dependencies:
 ```bash
-python analyze_lotteries.py
+pip install -r requirements.txt
 ```
-
-This will create a timestamped directory (format: `lottery_analysis_YYYYMMDD_HHMMSS`) containing five CSV files:
-
-1. `1_overall_statistics.csv`
-   - Total draws for each lottery
-   - Number ranges
-   - Coverage statistics
-
-2. `2_number_frequencies.csv`
-   - Frequency of each number
-   - Both count and percentage
-   - Separate sections for main numbers and special balls
-
-3. `3_position_frequencies.csv`
-   - Position-specific number frequencies
-   - Analysis of numbers in each position (1-5)
-   - Both count and percentage
-
-4. `4_combination_frequencies.csv`
-   - Analysis of winning combinations
-   - Both main numbers only and full combinations
-   - Frequency and percentage of occurrences
-
-5. `5_unused_numbers.csv`
-   - Numbers that have never been drawn
-   - Separated by lottery type and number category
-
-### API Server (Coming Soon)
-
-1. Start the server:
-```bash
-python api_server.py
-```
-
-The server will run on `http://localhost:8000`
-
-2. Access the API documentation:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-## Data Format
-
-### CSV Output Files
-
-#### Lottery Data Files
-- `mega_millions.csv` and `powerball.csv`:
-  - Draw Date: Date of the drawing (MM/DD/YYYY)
-  - Winning Numbers: Five main numbers separated by spaces
-  - Special Ball: Mega Ball or Powerball number
-
-#### Analysis Output
-All analysis files include:
-- Clear headers and categories
-- Both raw counts and percentages
-- Lottery-specific breakdowns
-- Timestamp in directory name for version tracking
-
-## Technical Notes
-
-- Scraper includes a 2-second delay between requests
-- Handles Powerball format change after August 23, 2021
-- All dates stored in MM/DD/YYYY format
-- Analysis results include confidence metrics
-- Comprehensive error handling and validation
-
-## Input Validation Rules
-
-### Mega Millions
-- Main numbers: 5 unique numbers between 1 and 70
-- Mega Ball: 1 number between 1 and 25
-
-### Powerball
-- Main numbers: 5 unique numbers between 1 and 69
-- Powerball: 1 number between 1 and 26
 
 ## Project Structure
 
 ```
-lottostats-api/
-├── lottery_scraper.py      # Data collection script
-├── lottery_analysis.py     # Base analysis functionality
-├── mega_millions_analysis.py # Mega Millions specific analysis
-├── powerball_analysis.py   # Powerball specific analysis
-├── analyze_lotteries.py    # Comprehensive analysis script
-├── api_server.py          # FastAPI server (coming soon)
-├── requirements.txt       # Project dependencies
-├── powerball.csv         # Powerball historical data
-├── mega_millions.csv     # Mega Millions historical data
-└── README.md            # Project documentation
+lottery-stats-api/
+├── lottery_scraper.py     # Main scraping script
+├── requirements.txt       # Python dependencies
+└── data/                 # Generated CSV files
+    ├── powerball.csv
+    └── mega_millions.csv
 ```
 
-## Dependencies
+## Error Handling
 
-### Core Dependencies
-- requests: For making HTTP requests
-- beautifulsoup4: For parsing HTML content
-- pandas: For data manipulation and CSV handling
-
-### Analysis Dependencies
-- numpy: For numerical computations
-- dataclasses: For structured data handling
-
-### API Dependencies (Coming Soon)
-- fastapi: Web framework for building APIs
-- uvicorn: ASGI server implementation
-- pydantic: Data validation
+The scraper includes robust error handling:
+- Network errors: Automatic retries with exponential backoff
+- Malformed HTML: Flexible parsing that adapts to different page structures
+- Rate limiting: Built-in delays between requests
+- Data validation: Ensures complete and valid data before saving
 
 ## Contributing
 

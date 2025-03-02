@@ -1,11 +1,12 @@
 from fastapi import FastAPI, HTTPException, Query
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Annotated, Any
 from pydantic import BaseModel, conlist
 from mega_millions_analysis import MegaMillionsAnalysis
 from powerball_analysis import PowerballAnalysis
 from enum import Enum
 import uvicorn
 import random
+import pandas as pd
 
 class LotteryType(str, Enum):
     mega_millions = "mega-millions"
@@ -23,7 +24,7 @@ class PositionFrequencyResponse(BaseModel):
     percentage: float
 
 class CombinationRequest(BaseModel):
-    numbers: conlist(int, min_items=5, max_items=5)  # Exactly 5 numbers
+    numbers: Annotated[List[int], conlist(item_type=int, min_length=5, max_length=5)]  # Exactly 5 numbers
     special_ball: Optional[int] = None
 
 class CombinationResponse(BaseModel):
@@ -31,13 +32,25 @@ class CombinationResponse(BaseModel):
     frequency: int
     dates: List[str]
     main_numbers: List[int]
-    special_ball: Optional[int]
+    special_ball: Optional[int] = None
+    matches: Optional[List[Dict[str, Any]]] = None  # List of detailed match information
 
 class GeneratedCombinationResponse(BaseModel):
     main_numbers: List[int]
     special_ball: int
     position_percentages: Optional[Dict[int, float]] = None
     is_unique: bool
+
+class WinningCombination(BaseModel):
+    draw_date: str
+    main_numbers: List[int]
+    special_ball: int
+    prize: Optional[str] = None
+
+class WinningCombinationsResponse(BaseModel):
+    combinations: List[WinningCombination]
+    total_count: int
+    has_more: bool
 
 app = FastAPI(
     title="Lottery Stats API",
@@ -70,14 +83,14 @@ async def get_number_frequencies(
         else:
             raise HTTPException(status_code=400, detail="Invalid category. Use 'main' or 'special'")
         
-        return [
+        return sorted([
             NumberFrequencyResponse(
                 number=number,
                 count=freq.count,
                 percentage=freq.percentage
             )
             for number, freq in frequencies.items()
-        ]
+        ], key=lambda x: x.number)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -108,78 +121,69 @@ async def get_position_frequencies(
                     )
                 )
         
-        return results
+        # Sort first by position, then by number
+        return sorted(results, key=lambda x: (x.position, x.number))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/{lottery_type}/check-combination", response_model=CombinationResponse)
-async def check_combination(
-    lottery_type: LotteryType,
-    combination: CombinationRequest
-):
+async def check_combination(lottery_type: LotteryType, request: CombinationRequest):
     """Check if a combination exists in historical data."""
     try:
         analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
-        stats = analysis.get_analysis()
+        df = analysis.df
         
-        # Validate number ranges based on lottery type
-        if lottery_type == LotteryType.mega_millions:
-            if any(n < 1 or n > 70 for n in combination.numbers):
-                raise HTTPException(status_code=400, detail="Mega Millions main numbers must be between 1 and 70")
-            if combination.special_ball and (combination.special_ball < 1 or combination.special_ball > 25):
-                raise HTTPException(status_code=400, detail="Mega Ball must be between 1 and 25")
-        else:
-            if any(n < 1 or n > 69 for n in combination.numbers):
-                raise HTTPException(status_code=400, detail="Powerball main numbers must be between 1 and 69")
-            if combination.special_ball and (combination.special_ball < 1 or combination.special_ball > 26):
-                raise HTTPException(status_code=400, detail="Powerball must be between 1 and 26")
+        # Convert main numbers to string format for comparison
+        main_numbers_str = ' '.join(map(str, sorted(request.numbers)))
         
-        # Check if numbers are unique
-        if len(set(combination.numbers)) != 5:
-            raise HTTPException(status_code=400, detail="Main numbers must be unique")
+        # Find matches based on main numbers
+        matches = df[df['Winning Numbers'] == main_numbers_str].copy()
         
-        # Sort numbers for consistency
-        sorted_numbers = tuple(sorted(combination.numbers))
-        
-        # Check main numbers only or full combination
-        if combination.special_ball is None:
-            frequencies = stats['number_combination_frequencies']
-            combo_key = sorted_numbers
-        else:
-            frequencies = stats['full_combination_frequencies']
-            combo_key = tuple(list(sorted_numbers) + [combination.special_ball])
-        
-        # Find the combination and its dates
-        freq_stats = frequencies.get(combo_key)
-        if freq_stats:
-            # Find dates when this combination occurred
-            dates = []
-            for _, row in analysis.df.iterrows():
-                row_numbers = sorted([int(n) for n in row['Winning Numbers'].split()])
-                row_special = int(row[analysis.special_ball_column]) if combination.special_ball else None
-                
-                if row_numbers == list(sorted_numbers):
-                    if combination.special_ball is None or row_special == combination.special_ball:
-                        dates.append(row['Draw Date'])
-            
-            return CombinationResponse(
-                exists=True,
-                frequency=freq_stats.count,
-                dates=dates,
-                main_numbers=list(sorted_numbers),
-                special_ball=combination.special_ball
-            )
-        else:
+        if matches.empty:
             return CombinationResponse(
                 exists=False,
                 frequency=0,
                 dates=[],
-                main_numbers=list(sorted_numbers),
-                special_ball=combination.special_ball
+                main_numbers=sorted(request.numbers),
+                special_ball=request.special_ball
+            )
+        
+        # Convert matches to response format
+        matches_list = []
+        exact_match_found = False
+        
+        for _, row in matches.iterrows():
+            row_special_ball = int(row[analysis.special_ball_column])
+            
+            # If special ball is provided, mark if we found an exact match
+            if request.special_ball is not None and row_special_ball == request.special_ball:
+                exact_match_found = True
+                
+            matches_list.append({
+                'date': row['Draw Date'],
+                'special_ball': row_special_ball,
+                'prize': row.get('Prize', None)  # Include prize if available
+            })
+            
+        # If special ball was provided but no exact match was found, return no matches
+        if request.special_ball is not None and not exact_match_found:
+            return CombinationResponse(
+                exists=False,
+                frequency=0,
+                dates=[],
+                main_numbers=sorted(request.numbers),
+                special_ball=request.special_ball
             )
             
-    except HTTPException:
-        raise
+        return CombinationResponse(
+            exists=True,
+            frequency=len(matches_list),
+            dates=[match['date'] for match in matches_list],
+            main_numbers=sorted(request.numbers),
+            special_ball=request.special_ball,
+            matches=matches_list  # Include detailed match information
+        )
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -288,6 +292,57 @@ async def generate_random_combination(lottery_type: LotteryType):
             status_code=500,
             detail="Could not generate a unique combination after maximum attempts"
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/{lottery_type}/latest-combinations", response_model=WinningCombinationsResponse)
+async def get_latest_combinations(
+    lottery_type: LotteryType,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=50, description="Number of combinations per page")
+):
+    """Get the latest winning combinations with pagination support, sorted by most recent draw date first."""
+    try:
+        analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
+        df = analysis.df
+        
+        # Convert Draw Date to datetime for proper sorting
+        df['Draw Date'] = pd.to_datetime(df['Draw Date'])
+        
+        # Sort by draw date in descending order (most recent first)
+        df = df.sort_values('Draw Date', ascending=False)
+        
+        # Convert back to string format
+        df['Draw Date'] = df['Draw Date'].dt.strftime('%Y-%m-%d')
+        
+        # Calculate pagination
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        total_count = len(df)
+        
+        # Get the slice of data for current page
+        page_df = df.iloc[start_idx:end_idx]
+        
+        combinations = []
+        for _, row in page_df.iterrows():
+            main_numbers = sorted([int(n) for n in row['Winning Numbers'].split()])
+            special_ball = int(row[analysis.special_ball_column])
+            
+            combinations.append(
+                WinningCombination(
+                    draw_date=row['Draw Date'],
+                    main_numbers=main_numbers,
+                    special_ball=special_ball,
+                    prize=row.get('Prize', None)  # Include prize if available
+                )
+            )
+        
+        return WinningCombinationsResponse(
+            combinations=combinations,
+            total_count=total_count,
+            has_more=(end_idx < total_count)
+        )
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
