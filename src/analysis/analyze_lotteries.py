@@ -1,132 +1,157 @@
+#!/usr/bin/env python3
+import sqlite3
 import pandas as pd
-from src.analysis.mega_millions_analysis import MegaMillionsAnalysis
-from src.analysis.powerball_analysis import PowerballAnalysis
-from datetime import datetime
-import os
+from pathlib import Path
+from collections import Counter, defaultdict
+from typing import Dict, List, Tuple
 
 # Constants
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
-ANALYSIS_DIR = os.path.join(DATA_DIR, 'analysis')
+DB_PATH = Path(__file__).parent.parent.parent / 'data' / 'lottery.db'
 
-def format_frequency_data(freq_dict, lottery_type, category):
-    """Convert frequency dictionary to DataFrame rows."""
-    rows = []
-    for number, stats in freq_dict.items():
-        rows.append({
-            'Lottery': lottery_type,
-            'Category': category,
-            'Number': number,
-            'Count': stats.count,
-            'Percentage': stats.percentage
-        })
-    return rows
+def get_draws_df(conn: sqlite3.Connection, lottery_type: str) -> pd.DataFrame:
+    """Get draws data for a specific lottery type from the database."""
+    query = "SELECT * FROM draws WHERE lottery_type = ? ORDER BY draw_date DESC"
+    return pd.read_sql_query(query, conn, params=(lottery_type,))
 
-def format_position_data(pos_freq_dict, lottery_type):
-    """Convert position frequency dictionary to DataFrame rows."""
-    rows = []
-    for position, numbers in pos_freq_dict.items():
-        for number, stats in numbers.items():
-            rows.append({
-                'Lottery': lottery_type,
-                'Position': position,
-                'Number': number,
-                'Count': stats.count,
-                'Percentage': stats.percentage
-            })
-    return rows
-
-def format_combination_data(combo_freq_dict, lottery_type, category):
-    """Convert combination frequency dictionary to DataFrame rows."""
-    rows = []
-    for combo, stats in combo_freq_dict.items():
-        rows.append({
-            'Lottery': lottery_type,
-            'Category': category,
-            'Combination': ' '.join(map(str, combo)),
-            'Count': stats.count,
-            'Percentage': stats.percentage
-        })
-    return rows
-
-def analyze_and_export():
-    """Run analyses for both lotteries and export results to CSV files."""
-    # Create analysis directory if it doesn't exist
-    os.makedirs(ANALYSIS_DIR, exist_ok=True)
-
-    # Initialize analyzers
-    mega = MegaMillionsAnalysis()
-    power = PowerballAnalysis()
+def analyze_number_frequencies(df: pd.DataFrame, lottery_type: str) -> List[Tuple]:
+    """Analyze overall number frequencies from draw data."""
+    total_draws = len(df)
+    number_counts = Counter()
     
-    # Get analyses
-    mega_analysis = mega.get_analysis()
-    power_analysis = power.get_analysis()
-
-    # 1. Overall Statistics
-    stats_rows = []
-    for lottery, analysis in [('Mega Millions', mega_analysis), ('Powerball', power_analysis)]:
-        stats_rows.append({
-            'Lottery': lottery,
-            'Total Draws': analysis['total_draws'],
-            'Main Numbers Range': f"{analysis['main_number_range'][0]}-{analysis['main_number_range'][1]}",
-            'Special Ball Range': f"{analysis['special_ball_range'][0]}-{analysis['special_ball_range'][1]}",
-            'Main Numbers Coverage (%)': analysis['coverage_statistics']['main_numbers_coverage'],
-            'Special Ball Coverage (%)': analysis['coverage_statistics']['mega_ball_coverage' if lottery == 'Mega Millions' else 'powerball_coverage']
-        })
-    pd.DataFrame(stats_rows).to_csv(os.path.join(ANALYSIS_DIR, 'overall_statistics.csv'), index=False)
-
-    # 2. Number Frequencies
-    frequency_rows = []
-    # Mega Millions frequencies
-    frequency_rows.extend(format_frequency_data(mega_analysis['overall_frequencies'], 'Mega Millions', 'Main Numbers'))
-    frequency_rows.extend(format_frequency_data(mega_analysis['special_ball_frequencies'], 'Mega Millions', 'Mega Ball'))
-    # Powerball frequencies
-    frequency_rows.extend(format_frequency_data(power_analysis['overall_frequencies'], 'Powerball', 'Main Numbers'))
-    frequency_rows.extend(format_frequency_data(power_analysis['special_ball_frequencies'], 'Powerball', 'Powerball'))
+    # Count occurrences of each number
+    for _, row in df.iterrows():
+        numbers = [int(n) for n in row['winning_numbers'].split()]
+        number_counts.update(numbers)
     
-    pd.DataFrame(frequency_rows).to_csv(os.path.join(ANALYSIS_DIR, 'number_frequencies.csv'), index=False)
-
-    # 3. Position-specific Frequencies
-    position_rows = []
-    position_rows.extend(format_position_data(mega_analysis['position_frequencies'], 'Mega Millions'))
-    position_rows.extend(format_position_data(power_analysis['position_frequencies'], 'Powerball'))
+    # Convert to database records
+    records = []
+    for number, count in number_counts.items():
+        percentage = (count / (total_draws * 5)) * 100  # 5 numbers per draw
+        records.append((
+            lottery_type,
+            number,
+            count,
+            percentage
+        ))
     
-    pd.DataFrame(position_rows).to_csv(os.path.join(ANALYSIS_DIR, 'position_frequencies.csv'), index=False)
+    return records
 
-    # 4. Combination Frequencies
-    combination_rows = []
-    # Main number combinations (without special ball)
-    combination_rows.extend(format_combination_data(mega_analysis['number_combination_frequencies'], 'Mega Millions', 'Main Numbers Only'))
-    combination_rows.extend(format_combination_data(power_analysis['number_combination_frequencies'], 'Powerball', 'Main Numbers Only'))
-    # Full combinations (with special ball)
-    combination_rows.extend(format_combination_data(mega_analysis['full_combination_frequencies'], 'Mega Millions', 'Full Combination'))
-    combination_rows.extend(format_combination_data(power_analysis['full_combination_frequencies'], 'Powerball', 'Full Combination'))
+def analyze_position_frequencies(df: pd.DataFrame, lottery_type: str) -> List[Tuple]:
+    """Analyze position-specific frequencies from draw data."""
+    total_draws = len(df)
+    position_counts = defaultdict(Counter)
     
-    pd.DataFrame(combination_rows).to_csv(os.path.join(ANALYSIS_DIR, 'combination_frequencies.csv'), index=False)
-
-    # 5. Unused Numbers Report
-    unused_rows = []
-    for lottery, analysis in [('Mega Millions', mega_analysis), ('Powerball', power_analysis)]:
-        coverage = analysis['coverage_statistics']
-        unused_rows.append({
-            'Lottery': lottery,
-            'Category': 'Main Numbers',
-            'Unused Numbers': ', '.join(map(str, coverage['unused_main_numbers']))
-        })
-        unused_rows.append({
-            'Lottery': lottery,
-            'Category': 'Special Ball',
-            'Unused Numbers': ', '.join(map(str, coverage['unused_mega_balls' if lottery == 'Mega Millions' else 'unused_powerballs']))
-        })
+    # Count occurrences of each number in each position
+    for _, row in df.iterrows():
+        numbers = [int(n) for n in row['winning_numbers'].split()]
+        for pos, num in enumerate(numbers, 1):  # 1-based position indexing
+            position_counts[pos][num] += 1
+        
+        # Add special ball frequencies (position 6)
+        position_counts[6][row['special_ball']] += 1
     
-    pd.DataFrame(unused_rows).to_csv(os.path.join(ANALYSIS_DIR, 'unused_numbers.csv'), index=False)
+    # Convert to database records
+    records = []
+    for position, counts in position_counts.items():
+        for number, count in counts.items():
+            percentage = (count / total_draws) * 100
+            records.append((
+                lottery_type,
+                position,
+                number,
+                count,
+                percentage
+            ))
+    
+    return records
 
-    print("\nAnalysis complete! Results have been exported to the 'analysis' directory.")
-    print("\nFiles created:")
-    print("1. overall_statistics.csv - General statistics for both lotteries")
-    print("2. number_frequencies.csv - Frequency analysis of all numbers")
-    print("3. position_frequencies.csv - Position-specific number frequencies")
-    print("4. combination_frequencies.csv - Analysis of winning combinations")
-    print("5. unused_numbers.csv - Numbers that have never been drawn")
+def update_frequencies(conn: sqlite3.Connection):
+    """Update frequency tables in the database."""
+    cursor = conn.cursor()
+    
+    # Clear existing frequency data
+    cursor.execute('DELETE FROM number_frequencies')
+    cursor.execute('DELETE FROM position_frequencies')
+    
+    # Analyze each lottery type
+    for lottery_type in ['powerball', 'mega_millions']:
+        print(f"\nAnalyzing {lottery_type}...")
+        
+        # Get draw data
+        df = get_draws_df(conn, lottery_type)
+        if len(df) == 0:
+            print(f"No data found for {lottery_type}")
+            continue
+        
+        # Analyze and update number frequencies
+        number_records = analyze_number_frequencies(df, lottery_type)
+        cursor.executemany(
+            'INSERT INTO number_frequencies (lottery_type, number, frequency, percentage) VALUES (?, ?, ?, ?)',
+            number_records
+        )
+        print(f"Updated {len(number_records)} number frequency records")
+        
+        # Analyze and update position frequencies
+        position_records = analyze_position_frequencies(df, lottery_type)
+        cursor.executemany(
+            'INSERT INTO position_frequencies (lottery_type, position, number, frequency, percentage) VALUES (?, ?, ?, ?, ?)',
+            position_records
+        )
+        print(f"Updated {len(position_records)} position frequency records")
+    
+    conn.commit()
 
-if __name__ == "__main__":
-    analyze_and_export() 
+def print_summary(conn: sqlite3.Connection):
+    """Print summary statistics of the analysis."""
+    cursor = conn.cursor()
+    
+    print("\nAnalysis Summary:")
+    print("----------------")
+    
+    # Draw counts
+    cursor.execute('SELECT lottery_type, COUNT(*) FROM draws GROUP BY lottery_type')
+    for lottery_type, count in cursor.fetchall():
+        print(f"\n{lottery_type.upper()}:")
+        print(f"Total draws analyzed: {count}")
+        
+        # Most frequent numbers
+        cursor.execute('''
+            SELECT number, frequency, percentage 
+            FROM number_frequencies 
+            WHERE lottery_type = ? 
+            ORDER BY frequency DESC 
+            LIMIT 5
+        ''', (lottery_type,))
+        print("\nMost frequent numbers:")
+        for number, freq, pct in cursor.fetchall():
+            print(f"Number {number}: {freq} times ({pct:.2f}%)")
+        
+        # Most frequent numbers by position
+        print("\nMost frequent numbers by position:")
+        for position in range(1, 7):
+            pos_name = "Special Ball" if position == 6 else f"Position {position}"
+            cursor.execute('''
+                SELECT number, frequency, percentage 
+                FROM position_frequencies 
+                WHERE lottery_type = ? AND position = ? 
+                ORDER BY frequency DESC 
+                LIMIT 1
+            ''', (lottery_type, position))
+            number, freq, pct = cursor.fetchone()
+            print(f"{pos_name}: {number} ({freq} times, {pct:.2f}%)")
+
+def main():
+    """Main function to run the analysis."""
+    conn = sqlite3.connect(DB_PATH)
+    
+    try:
+        print("Starting lottery analysis...")
+        update_frequencies(conn)
+        print_summary(conn)
+        print("\nAnalysis complete!")
+        
+    finally:
+        conn.close()
+
+if __name__ == '__main__':
+    main() 

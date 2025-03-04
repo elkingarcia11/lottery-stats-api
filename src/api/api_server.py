@@ -1,17 +1,14 @@
 from fastapi import FastAPI, HTTPException, Query
 from typing import List, Dict, Optional, Annotated, Any
 from pydantic import BaseModel, conlist
-import sys
-import os
-
-# Add the parent directory to Python path to find the analysis modules
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from analysis.mega_millions_analysis import MegaMillionsAnalysis
-from analysis.powerball_analysis import PowerballAnalysis
+import sqlite3
+from pathlib import Path
+import random
 from enum import Enum
 import uvicorn
-import random
-import pandas as pd
+
+# Constants
+DB_PATH = Path(__file__).parent.parent.parent / 'data' / 'lottery.db'
 
 class LotteryType(str, Enum):
     mega_millions = "mega-millions"
@@ -63,9 +60,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Initialize analyzers
-mega_millions = MegaMillionsAnalysis()
-powerball = PowerballAnalysis()
+def get_db():
+    """Get database connection."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # Enable row factory for dict-like access
+    return conn
 
 @app.get("/")
 async def root():
@@ -78,24 +77,39 @@ async def get_number_frequencies(
 ):
     """Get frequency statistics for all numbers in a lottery."""
     try:
-        analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
-        stats = analysis.get_analysis()
+        conn = get_db()
+        cursor = conn.cursor()
         
         if category == 'main':
-            frequencies = stats['overall_frequencies']
+            # Get main number frequencies
+            cursor.execute('''
+                SELECT number, frequency, percentage
+                FROM number_frequencies
+                WHERE lottery_type = ?
+                ORDER BY number
+            ''', (lottery_type.value.replace('-', '_'),))
         elif category == 'special':
-            frequencies = stats['special_ball_frequencies']
+            # Get special ball frequencies (position 6)
+            cursor.execute('''
+                SELECT number, frequency, percentage
+                FROM position_frequencies
+                WHERE lottery_type = ? AND position = 6
+                ORDER BY number
+            ''', (lottery_type.value.replace('-', '_'),))
         else:
             raise HTTPException(status_code=400, detail="Invalid category. Use 'main' or 'special'")
         
-        return sorted([
-            NumberFrequencyResponse(
-                number=number,
-                count=freq.count,
-                percentage=freq.percentage
-            )
-            for number, freq in frequencies.items()
-        ], key=lambda x: x.number)
+        results = []
+        for row in cursor.fetchall():
+            results.append(NumberFrequencyResponse(
+                number=row['number'],
+                count=row['frequency'],
+                percentage=row['percentage']
+            ))
+        
+        conn.close()
+        return results
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -106,28 +120,36 @@ async def get_position_frequencies(
 ):
     """Get frequency statistics for numbers in each position."""
     try:
-        analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
-        stats = analysis.get_analysis()
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        query = '''
+            SELECT position, number, frequency, percentage
+            FROM position_frequencies
+            WHERE lottery_type = ? AND position < 6
+        '''
+        params = [lottery_type.value.replace('-', '_')]
+        
+        if position:
+            query += ' AND position = ?'
+            params.append(position)
+            
+        query += ' ORDER BY position, number'
+        
+        cursor.execute(query, params)
         
         results = []
-        position_freqs = stats['position_frequencies']
+        for row in cursor.fetchall():
+            results.append(PositionFrequencyResponse(
+                position=row['position'],
+                number=row['number'],
+                count=row['frequency'],
+                percentage=row['percentage']
+            ))
         
-        for pos in range(1, 6):
-            if position and pos != position:
-                continue
-                
-            for number, freq in position_freqs[pos].items():
-                results.append(
-                    PositionFrequencyResponse(
-                        position=pos,
-                        number=number,
-                        count=freq.count,
-                        percentage=freq.percentage
-                    )
-                )
+        conn.close()
+        return results
         
-        # Sort first by position, then by number
-        return sorted(results, key=lambda x: (x.position, x.number))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -135,20 +157,24 @@ async def get_position_frequencies(
 async def check_combination(lottery_type: LotteryType, request: CombinationRequest):
     """Check if a combination exists in historical data."""
     try:
-        analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
-        df = analysis.df.copy()  # Create a copy to avoid modifying original
+        conn = get_db()
+        cursor = conn.cursor()
         
-        # Convert Draw Date to string format if it's not already
-        if pd.api.types.is_datetime64_any_dtype(df['Draw Date']):
-            df['Draw Date'] = df['Draw Date'].dt.strftime('%Y-%m-%d')
-        
-        # Convert main numbers to string format for comparison
+        # Convert numbers to string format for comparison
         main_numbers_str = ' '.join(map(str, sorted(request.numbers)))
         
         # Find matches based on main numbers
-        matches = df[df['Winning Numbers'] == main_numbers_str].copy()
+        cursor.execute('''
+            SELECT draw_date, winning_numbers, special_ball
+            FROM draws
+            WHERE lottery_type = ? AND winning_numbers = ?
+            ORDER BY draw_date DESC
+        ''', (lottery_type.value.replace('-', '_'), main_numbers_str))
         
-        if matches.empty:
+        matches = cursor.fetchall()
+        
+        if not matches:
+            conn.close()
             return CombinationResponse(
                 exists=False,
                 frequency=0,
@@ -161,19 +187,21 @@ async def check_combination(lottery_type: LotteryType, request: CombinationReque
         matches_list = []
         exact_match_found = False
         
-        for _, row in matches.iterrows():
-            row_special_ball = int(row[analysis.special_ball_column])
+        for row in matches:
+            row_special_ball = row['special_ball']
             
             # If special ball is provided, mark if we found an exact match
             if request.special_ball is not None and row_special_ball == request.special_ball:
                 exact_match_found = True
                 
             matches_list.append({
-                'date': str(row['Draw Date']),  # Ensure date is string
+                'date': row['draw_date'],
                 'special_ball': row_special_ball,
-                'prize': row.get('Prize', None)  # Include prize if available
+                'prize': None  # Prize info not currently stored
             })
-            
+        
+        conn.close()
+        
         # If special ball was provided but no exact match was found, return no matches
         if request.special_ball is not None and not exact_match_found:
             return CombinationResponse(
@@ -183,14 +211,14 @@ async def check_combination(lottery_type: LotteryType, request: CombinationReque
                 main_numbers=sorted(request.numbers),
                 special_ball=request.special_ball
             )
-            
+        
         return CombinationResponse(
             exists=True,
             frequency=len(matches_list),
             dates=[match['date'] for match in matches_list],
             main_numbers=sorted(request.numbers),
             special_ball=request.special_ball,
-            matches=matches_list  # Include detailed match information
+            matches=matches_list
         )
         
     except Exception as e:
@@ -200,73 +228,92 @@ async def check_combination(lottery_type: LotteryType, request: CombinationReque
 async def generate_optimized_combination(lottery_type: LotteryType):
     """Generate a combination that maximizes position-specific frequencies while ensuring it's unique."""
     try:
-        analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
-        stats = analysis.get_analysis()
-        position_freqs = stats['position_frequencies']
+        conn = get_db()
+        cursor = conn.cursor()
         
         # Get the maximum range for numbers based on lottery type
         max_main = 70 if lottery_type == LotteryType.mega_millions else 69
         max_special = 25 if lottery_type == LotteryType.mega_millions else 26
         
-        # Find the highest frequency numbers for each position
+        # Get highest frequency numbers for each position
         optimized_numbers = []
         position_percentages = {}
         
-        for pos in range(1, 6):
-            # Sort numbers by frequency for this position
-            sorted_nums = sorted(
-                position_freqs[pos].items(),
-                key=lambda x: x[1].percentage,
-                reverse=True
-            )
+        for position in range(1, 6):
+            cursor.execute('''
+                SELECT number, percentage
+                FROM position_frequencies
+                WHERE lottery_type = ? AND position = ?
+                ORDER BY frequency DESC
+            ''', (lottery_type.value.replace('-', '_'), position))
             
             # Find the highest frequency number that isn't already selected
-            for num, freq in sorted_nums:
-                if num not in optimized_numbers and 1 <= num <= max_main:
-                    optimized_numbers.append(num)
-                    position_percentages[pos] = freq.percentage
+            for row in cursor.fetchall():
+                if row['number'] not in optimized_numbers and 1 <= row['number'] <= max_main:
+                    optimized_numbers.append(row['number'])
+                    position_percentages[position] = row['percentage']
                     break
         
-        # Find the highest frequency special ball
-        special_freqs = stats['special_ball_frequencies']
-        special_ball = max(
-            special_freqs.items(),
-            key=lambda x: x[1].percentage
-        )[0]
+        # Get highest frequency special ball
+        cursor.execute('''
+            SELECT number
+            FROM position_frequencies
+            WHERE lottery_type = ? AND position = 6
+            ORDER BY frequency DESC
+            LIMIT 1
+        ''', (lottery_type.value.replace('-', '_'),))
+        special_ball = cursor.fetchone()['number']
         
-        # Check if this combination already exists
-        combo = tuple(sorted(optimized_numbers) + [special_ball])
-        is_unique = combo not in stats['full_combination_frequencies']
+        # Check if combination exists
+        main_numbers_str = ' '.join(map(str, sorted(optimized_numbers)))
+        cursor.execute('''
+            SELECT COUNT(*) as count
+            FROM draws
+            WHERE lottery_type = ? AND winning_numbers = ? AND special_ball = ?
+        ''', (lottery_type.value.replace('-', '_'), main_numbers_str, special_ball))
         
-        # If not unique, modify the combination slightly
+        is_unique = cursor.fetchone()['count'] == 0
+        
+        # If not unique, try modifying the combination
         if not is_unique:
-            # Try replacing the last number with the next best option
+            # Try replacing the last number
             original_last = optimized_numbers[-1]
             for num in range(1, max_main + 1):
                 if num not in optimized_numbers:
                     optimized_numbers[-1] = num
-                    new_combo = tuple(sorted(optimized_numbers) + [special_ball])
-                    if new_combo not in stats['full_combination_frequencies']:
+                    main_numbers_str = ' '.join(map(str, sorted(optimized_numbers)))
+                    cursor.execute('''
+                        SELECT COUNT(*) as count
+                        FROM draws
+                        WHERE lottery_type = ? AND winning_numbers = ? AND special_ball = ?
+                    ''', (lottery_type.value.replace('-', '_'), main_numbers_str, special_ball))
+                    if cursor.fetchone()['count'] == 0:
                         is_unique = True
                         break
             
-            # If still not unique, restore original and try a different special ball
+            # If still not unique, restore original and try different special ball
             if not is_unique:
                 optimized_numbers[-1] = original_last
                 for num in range(1, max_special + 1):
                     if num != special_ball:
-                        new_combo = tuple(sorted(optimized_numbers) + [num])
-                        if new_combo not in stats['full_combination_frequencies']:
+                        cursor.execute('''
+                            SELECT COUNT(*) as count
+                            FROM draws
+                            WHERE lottery_type = ? AND winning_numbers = ? AND special_ball = ?
+                        ''', (lottery_type.value.replace('-', '_'), main_numbers_str, num))
+                        if cursor.fetchone()['count'] == 0:
                             special_ball = num
                             is_unique = True
                             break
         
+        conn.close()
         return GeneratedCombinationResponse(
             main_numbers=sorted(optimized_numbers),
             special_ball=special_ball,
             position_percentages=position_percentages,
             is_unique=is_unique
         )
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -274,8 +321,8 @@ async def generate_optimized_combination(lottery_type: LotteryType):
 async def generate_random_combination(lottery_type: LotteryType):
     """Generate a random combination that hasn't appeared before."""
     try:
-        analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
-        stats = analysis.get_analysis()
+        conn = get_db()
+        cursor = conn.cursor()
         
         # Get the maximum range for numbers based on lottery type
         max_main = 70 if lottery_type == LotteryType.mega_millions else 69
@@ -285,22 +332,31 @@ async def generate_random_combination(lottery_type: LotteryType):
         max_attempts = 100  # Prevent infinite loop
         for _ in range(max_attempts):
             # Generate 5 unique random numbers for main numbers
-            main_numbers = random.sample(range(1, max_main + 1), 5)
+            main_numbers = sorted(random.sample(range(1, max_main + 1), 5))
             special_ball = random.randint(1, max_special)
             
             # Check if this combination exists
-            combo = tuple(sorted(main_numbers) + [special_ball])
-            if combo not in stats['full_combination_frequencies']:
+            main_numbers_str = ' '.join(map(str, main_numbers))
+            cursor.execute('''
+                SELECT COUNT(*) as count
+                FROM draws
+                WHERE lottery_type = ? AND winning_numbers = ? AND special_ball = ?
+            ''', (lottery_type.value.replace('-', '_'), main_numbers_str, special_ball))
+            
+            if cursor.fetchone()['count'] == 0:
+                conn.close()
                 return GeneratedCombinationResponse(
-                    main_numbers=sorted(main_numbers),
+                    main_numbers=main_numbers,
                     special_ball=special_ball,
                     is_unique=True
                 )
         
+        conn.close()
         raise HTTPException(
             status_code=500,
             detail="Could not generate a unique combination after maximum attempts"
         )
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -310,46 +366,44 @@ async def get_latest_combinations(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=50, description="Number of combinations per page")
 ):
-    """Get the latest winning combinations with pagination support, sorted by most recent draw date first."""
+    """Get the latest winning combinations with pagination support."""
     try:
-        analysis = mega_millions if lottery_type == LotteryType.mega_millions else powerball
-        df = analysis.df
+        conn = get_db()
+        cursor = conn.cursor()
         
-        # Convert Draw Date to datetime for proper sorting
-        df['Draw Date'] = pd.to_datetime(df['Draw Date'])
-        
-        # Sort by draw date in descending order (most recent first)
-        df = df.sort_values('Draw Date', ascending=False)
-        
-        # Convert back to string format
-        df['Draw Date'] = df['Draw Date'].dt.strftime('%Y-%m-%d')
+        # Get total count
+        cursor.execute(
+            'SELECT COUNT(*) as count FROM draws WHERE lottery_type = ?',
+            (lottery_type.value.replace('-', '_'),)
+        )
+        total_count = cursor.fetchone()['count']
         
         # Calculate pagination
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        total_count = len(df)
+        offset = (page - 1) * page_size
         
-        # Get the slice of data for current page
-        page_df = df.iloc[start_idx:end_idx]
+        # Get paginated results
+        cursor.execute('''
+            SELECT draw_date, winning_numbers, special_ball
+            FROM draws
+            WHERE lottery_type = ?
+            ORDER BY draw_date DESC
+            LIMIT ? OFFSET ?
+        ''', (lottery_type.value.replace('-', '_'), page_size, offset))
         
         combinations = []
-        for _, row in page_df.iterrows():
-            main_numbers = sorted([int(n) for n in row['Winning Numbers'].split()])
-            special_ball = int(row[analysis.special_ball_column])
-            
-            combinations.append(
-                WinningCombination(
-                    draw_date=row['Draw Date'],
-                    main_numbers=main_numbers,
-                    special_ball=special_ball,
-                    prize=row.get('Prize', None)  # Include prize if available
-                )
-            )
+        for row in cursor.fetchall():
+            main_numbers = [int(n) for n in row['winning_numbers'].split()]
+            combinations.append(WinningCombination(
+                draw_date=row['draw_date'],
+                main_numbers=sorted(main_numbers),
+                special_ball=row['special_ball']
+            ))
         
+        conn.close()
         return WinningCombinationsResponse(
             combinations=combinations,
             total_count=total_count,
-            has_more=(end_idx < total_count)
+            has_more=(offset + page_size < total_count)
         )
         
     except Exception as e:
