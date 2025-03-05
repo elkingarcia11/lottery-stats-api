@@ -1,18 +1,25 @@
+#!/usr/bin/env python3
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
+import sqlite3
 from datetime import datetime
-import time
-from typing import Literal
 import argparse
-import urllib3
-import os
+from pathlib import Path
+import time
+import random
+from typing import List, Dict, Optional, Tuple, Literal
+import logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import urllib3
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Constants
-DATA_DIR = 'data/raw'
-DEBUG_DIR = 'data/debug'
+DB_PATH = Path(__file__).parent.parent.parent / 'data' / 'lottery.db'
+BASE_URL = "https://www.lottery.net"
 
 def create_session_with_retries() -> requests.Session:
     """Create a session with retry strategy."""
@@ -33,284 +40,257 @@ def create_session_with_retries() -> requests.Session:
     
     return session
 
-def extract_numbers_from_row(row, min_date=None, lottery_type='powerball'):
-    try:
-        # Extract date from the first td
-        date_td = row.find('td')
-        if not date_td:
-            return None
-        date_link = date_td.find('a')
-        if not date_link:
-            return None
-            
-        # Extract date from href instead of text content
-        href = date_link.get('href', '')
-        if not href:
-            return None
-            
-        # URL format is /powerball/numbers/MM-DD-YYYY
-        date_str = href.split('/')[-1]  # Get MM-DD-YYYY
-        draw_date = datetime.strptime(date_str, '%m-%d-%Y')
-        
-        if min_date and draw_date < min_date:
-            return None
-            
-        # Extract numbers from the second td
-        numbers_td = date_td.find_next_sibling('td')
-        if not numbers_td:
-            return None
-            
-        # Get all ul elements with class 'multi results powerball' or 'multi results mega-millions'
-        results_lists = numbers_td.find_all('ul', class_=f'multi results {lottery_type}')
-        if not results_lists:
-            return None
-            
-        # Always use the first results list - this contains the main draw
-        results_list = results_lists[0]
-        
-        # Extract all ball elements
-        balls = []
-        special_ball = None
-        multiplier = None
-        
-        # Get all direct li children of the first results list
-        for li in results_list.find_all('li', recursive=False):
-            if not li.get('class'):
-                continue
-                
-            text = li.get_text(strip=True)
-            if not text:
-                continue
-                
-            if 'ball' in li.get('class') and 'mega-ball' not in li.get('class') and 'powerball' not in li.get('class'):
-                if len(balls) < 5:  # Only take first 5 balls
-                    balls.append(text)
-            elif 'powerball' in li.get('class') or 'mega-ball' in li.get('class'):
-                special_ball = text
-            elif 'power-play' in li.get('class') or 'megaplier' in li.get('class'):
-                multiplier = text
-        
-        # Validate we have the correct number of balls
-        if len(balls) != 5 or not special_ball:
-            print(f"Invalid number of balls for {date_str}: {len(balls)} regular balls, special ball: {special_ball}")
-            return None
-            
-        return {
-            'date': draw_date,
-            'winning_numbers': balls,
-            'special_ball': special_ball,
-            'multiplier': multiplier if multiplier else "1"
+class LotteryScraper:
+    def __init__(self, lottery_type: str):
+        """Initialize the scraper for a specific lottery type."""
+        self.lottery_type = lottery_type
+        self.logger = logging.getLogger(__name__)
+        self.session = create_session_with_retries()
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
         }
-    except Exception as e:
-        print(f"Error processing row: {e}")
-        return None
 
-def scrape_lottery(year: int, lottery_type: Literal['mega-millions', 'powerball'], min_date: datetime = None, debug: bool = False):
-    """
-    Scrape lottery data for a specific year and lottery type
-    
-    Args:
-        year: The year to scrape
-        lottery_type: Type of lottery ('mega-millions' or 'powerball')
-        min_date: Optional minimum date to include (datetime object)
-        debug: Whether to save debug HTML files
-    """
-    url = f"https://www.lottery.net/{lottery_type}/numbers/{year}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    }
-    
-    # Disable SSL verification warnings
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    
-    try:
-        print(f"\nFetching URL: {url}")
-        session = create_session_with_retries()
-        
-        # Try with SSL verification first
+    def _get_latest_date_from_db(self, conn: sqlite3.Connection) -> Optional[str]:
+        """Get the most recent draw date from the database."""
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT MAX(draw_date) FROM draws WHERE lottery_type = ?',
+            (self.lottery_type,)
+        )
+        result = cursor.fetchone()[0]
+        return result
+
+    def process_row(self, row):
         try:
-            response = session.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-        except (requests.exceptions.SSLError, urllib3.exceptions.SSLError):
-            print(f"SSL verification failed for {year}, retrying without SSL verification...")
-            # If SSL fails, try without verification
-            response = session.get(url, headers=headers, verify=False, timeout=30)
-            response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Debug: Save HTML content to file if debug flag is enabled
-        if debug:
-            os.makedirs(DEBUG_DIR, exist_ok=True)
-            with open(os.path.join(DEBUG_DIR, f'debug_{year}.html'), 'w', encoding='utf-8') as f:
-                f.write(soup.prettify())
-            
-        data = []
-        
-        # For years before 2021, use the original table-based approach
-        if year < 2021:
-            table = soup.find('table')
-            if not table:
-                print(f"No table found for {year}")
-                return []
-                
-            draw_rows = table.find_all('tr')
-            print(f"Found {len(draw_rows)} potential draws for {year}")
-            
-            for row in draw_rows:
-                try:
-                    row_data = extract_numbers_from_row(row, min_date, lottery_type)
-                    if row_data:
-                        data.append(row_data)
-                except Exception as e:
-                    print(f"Error processing draw: {str(e)}")
-                    continue
-        else:
-            # For 2021 and later, find all tr elements that contain lottery results
-            # Look for tr elements that have both td elements and lottery numbers
-            all_rows = soup.find_all('tr')
-            valid_rows = []
-            
-            for row in all_rows:
-                # Check if row has the correct structure (two td cells, one with a date link)
-                tds = row.find_all('td')
-                if len(tds) == 2 and tds[0].find('a') and tds[1].find('ul', class_=f'multi results {lottery_type}'):
-                    valid_rows.append(row)
-            
-            print(f"Found {len(valid_rows)} potential draws for {year}")
-            
-            for row in valid_rows:
-                try:
-                    row_data = extract_numbers_from_row(row, min_date, lottery_type)
-                    if row_data:
-                        data.append(row_data)
-                except Exception as e:
-                    print(f"Error processing draw: {str(e)}")
-                    continue
-        
-        print(f"Successfully collected {len(data)} records for {year}")
-        return data
-        
-    except requests.RequestException as e:
-        print(f"Network error for {year}: {str(e)}")
-        time.sleep(5)
-        return []
-    except Exception as e:
-        print(f"Unexpected error for {year}: {str(e)}")
-        return []
+            # Find the date cell
+            date_cell = row.find('td')
+            if not date_cell:
+                return None
 
-def update_lottery_data(lottery_type: str, start_date: str = None, debug: bool = False):
-    """
-    Update lottery data from a specific date, appending to existing CSV.
-    If no CSV exists or is empty, performs a full historical scrape.
-    If no start_date is provided, uses the latest date from existing CSV.
-    
-    Args:
-        lottery_type: Type of lottery ('mega-millions' or 'powerball')
-        start_date: Optional date string in YYYY-mm-dd format
-        debug: Whether to save debug HTML files
-    """
-    # Ensure data directory exists
-    os.makedirs(DATA_DIR, exist_ok=True)
-    
-    filename = os.path.join(DATA_DIR, f"{lottery_type}.csv")
-    current_year = datetime.now().year
-    
-    # Read existing data if file exists
-    if os.path.exists(filename):
-        existing_df = pd.read_csv(filename)
-        if len(existing_df) > 0:
-            print(f"Found existing file with {len(existing_df)} records")
+            # Get date from link or text
+            date_link = date_cell.find('a')
+            if date_link:
+                date_text = date_link.text.strip()
+            else:
+                date_text = date_cell.text.strip()
+
+            # Remove line breaks and extra whitespace
+            date_text = ' '.join(date_text.split())
+
+            # Handle date formats
+            try:
+                # First try the standard format
+                draw_date = datetime.strptime(date_text, '%B %d, %Y').strftime('%Y-%m-%d')
+            except ValueError:
+                try:
+                    # Try the format with day of week
+                    # Remove day of week from start of string
+                    date_parts = date_text.split(' ')
+                    if len(date_parts) >= 4:  # DayOfWeek Month DD, YYYY
+                        date_text = ' '.join(date_parts[1:])
+                    draw_date = datetime.strptime(date_text, '%B %d, %Y').strftime('%Y-%m-%d')
+                except ValueError as e:
+                    self.logger.warning(f"Could not parse date: {date_text} - {str(e)}")
+                    return None
+
+            # Find the numbers list
+            numbers_list = row.find('ul', class_='multi results mega-millions')
+            if not numbers_list:
+                return None
+
+            # Get all ball elements
+            regular_balls = []
+            special_ball = None
+            multiplier = 1.0
+
+            # Process each ball
+            for ball in numbers_list.find_all('li'):
+                try:
+                    number = int(ball.text.strip())
+                    if 'mega-ball' in ball.get('class', []):
+                        special_ball = number
+                    elif 'megaplier' in ball.get('class', []):
+                        multiplier = float(number)
+                    elif 'ball' in ball.get('class', []):
+                        regular_balls.append(str(number))
+                except ValueError as e:
+                    self.logger.warning(f"Could not parse ball number: {ball.text} - {str(e)}")
+                    continue
+
+            # Validate we have the correct number of balls
+            if len(regular_balls) != 5 or special_ball is None:
+                self.logger.warning(f"Invalid number of balls: {len(regular_balls)} regular, special: {special_ball}")
+                return None
+
+            draw = {
+                'draw_date': draw_date,
+                'winning_numbers': ' '.join(regular_balls),
+                'special_ball': special_ball,
+                'multiplier': multiplier
+            }
+
+            self.logger.debug(f"Successfully extracted draw: {draw}")
+            return draw
+
+        except Exception as e:
+            self.logger.error(f"Error processing row: {str(e)}")
+            return None
+
+    def scrape_year(self, year: int, min_date: Optional[datetime] = None) -> List[Dict]:
+        """Scrape lottery data for a specific year."""
+        url = f"https://www.lottery.net/{self.lottery_type}/numbers/{year}"
+        logger.info(f"Fetching URL: {url}")
+        
+        try:
+            # Try with SSL verification first
+            try:
+                response = self.session.get(url, headers=self.headers, timeout=30)
+                response.raise_for_status()
+            except (requests.exceptions.SSLError, urllib3.exceptions.SSLError):
+                logger.warning(f"SSL verification failed for {year}, retrying without SSL verification...")
+                # If SSL fails, try without verification
+                response = self.session.get(url, headers=self.headers, verify=False, timeout=30)
+                response.raise_for_status()
             
+            soup = BeautifulSoup(response.text, 'html.parser')
+            data = []
+            
+            # Try new format first (post-2021)
+            draw_rows = soup.find_all('tr', class_='draw')
+            if draw_rows:
+                logger.info(f"Found {len(draw_rows)} potential draws for {year}")
+                for row in draw_rows:
+                    row_data = self.process_row(row)
+                    if row_data:
+                        if min_date and datetime.strptime(row_data['draw_date'], '%Y-%m-%d') < min_date:
+                            logger.debug(f"Date {row_data['draw_date']} is before min_date {min_date}")
+                            continue
+                        data.append(row_data)
+            else:
+                # Try old format (pre-2021)
+                table = soup.find('table')
+                if table:
+                    rows = table.find_all('tr')[1:]  # Skip header row
+                    logger.info(f"Found {len(rows)} potential draws in old format for {year}")
+                    for row in rows:
+                        row_data = self.process_row(row)
+                        if row_data:
+                            if min_date and datetime.strptime(row_data['draw_date'], '%Y-%m-%d') < min_date:
+                                logger.debug(f"Date {row_data['draw_date']} is before min_date {min_date}")
+                                continue
+                            data.append(row_data)
+            
+            logger.info(f"Successfully collected {len(data)} records for {year}")
+            return data
+            
+        except requests.RequestException as e:
+            logger.error(f"Network error for {year}: {str(e)}")
+            time.sleep(5)
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error for {year}: {str(e)}")
+            return []
+
+    def _insert_draw(self, conn: sqlite3.Connection, draw_data: Dict) -> bool:
+        """Insert a single draw into the database."""
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR IGNORE INTO draws 
+                (lottery_type, draw_date, winning_numbers, special_ball, multiplier)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                self.lottery_type,
+                draw_data['draw_date'],
+                draw_data['winning_numbers'],
+                draw_data['special_ball'],
+                draw_data['multiplier']
+            ))
+            return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"Database error: {e}")
+            return False
+
+    def scrape_and_update(self, start_date: Optional[str] = None) -> int:
+        """
+        Scrape lottery data and update the database.
+        Returns the number of new records added.
+        """
+        conn = sqlite3.connect(DB_PATH)
+        try:
             if not start_date:
-                # Convert Draw Date to datetime for proper comparison
-                existing_df['Draw Date'] = pd.to_datetime(existing_df['Draw Date'])
-                latest_date = existing_df['Draw Date'].max()
-                start_date = latest_date.strftime('%Y-%m-%d')
-                print(f"Using latest date from CSV: {start_date}")
-        else:
-            print("Existing file is empty, performing full historical scrape")
-            existing_df = pd.DataFrame()
-            start_date = None
-    else:
-        print("No existing file found, performing full historical scrape")
-        existing_df = pd.DataFrame()
-        start_date = None
-    
-    # If no start_date (empty or non-existent file), do full historical scrape
-    if start_date is None:
-        start_year = 1992 if lottery_type == 'powerball' else 1996
-        print(f"Starting full historical scrape from {start_year}")
-    else:
-        start_year = datetime.strptime(start_date, '%Y-%m-%d').year
-    
-    # Collect new data
-    new_data = []
-    for year in range(start_year, current_year + 1):
-        year_data = scrape_lottery(year, lottery_type, 
-                                 datetime.strptime(start_date, '%Y-%m-%d') if start_date else None,
-                                 debug=debug)
-        if year_data:
-            new_data.extend(year_data)
-            time.sleep(1)  # Small delay between years
-    
-    if new_data:
-        # Convert new data to DataFrame and format it
-        new_records = []
-        for record in new_data:
-            new_records.append({
-                'Draw Date': record['date'].strftime('%Y-%m-%d'),
-                'Winning Numbers': ' '.join(record['winning_numbers']),
-                f'{lottery_type.split("-")[0].title()} Ball': record['special_ball'],
-                'Multiplier': record['multiplier']
-            })
-        new_df = pd.DataFrame(new_records)
-        
-        if not existing_df.empty:
-            # Make sure Draw Date is datetime for existing_df
-            if not pd.api.types.is_datetime64_any_dtype(existing_df['Draw Date']):
-                existing_df['Draw Date'] = pd.to_datetime(existing_df['Draw Date'])
+                start_date = self._get_latest_date_from_db(conn)
+                if start_date:
+                    logger.info(f"Using latest date from database: {start_date}")
+
+            min_date = datetime.strptime(start_date, '%Y-%m-%d') if start_date else None
+            current_year = datetime.now().year
+            start_year = min_date.year if min_date else (1992 if self.lottery_type == 'powerball' else 1996)
             
-            # Combine new and existing data
-            combined_df = pd.concat([new_df, existing_df], ignore_index=True)
+            new_records = 0
             
-            # Remove duplicates based on Draw Date
-            combined_df = combined_df.drop_duplicates(subset='Draw Date', keep='first')
-            
-            # Sort by date in descending order
-            combined_df['Draw Date'] = pd.to_datetime(combined_df['Draw Date'])
-            combined_df = combined_df.sort_values('Draw Date', ascending=False)
-            combined_df['Draw Date'] = combined_df['Draw Date'].dt.strftime('%Y-%m-%d')
-        else:
-            # For new/empty files, just sort the new data
-            combined_df = new_df.copy()
-            combined_df['Draw Date'] = pd.to_datetime(combined_df['Draw Date'])
-            combined_df = combined_df.sort_values('Draw Date', ascending=False)
-            combined_df['Draw Date'] = combined_df['Draw Date'].dt.strftime('%Y-%m-%d')
-        
-        # Save to CSV
-        combined_df.to_csv(filename, index=False)
-        print(f"\nUpdated {filename}")
-        print(f"Total records: {len(combined_df)}")
-        print(f"New records added: {len(new_df)}")
-    else:
-        print("No new data collected")
+            # Scrape each year from start_year to current_year
+            for year in range(current_year, start_year - 1, -1):
+                year_data = self.scrape_year(year, min_date)
+                
+                for draw_data in year_data:
+                    if self._insert_draw(conn, draw_data):
+                        new_records += 1
+                
+                # Random delay between years
+                if year > start_year:
+                    time.sleep(random.uniform(1, 3))
+
+            conn.commit()
+            logger.info(f"Added {new_records} new records to the database")
+            return new_records
+
+        except Exception as e:
+            logger.error(f"Error during scraping: {e}")
+            conn.rollback()
+            return 0
+
+        finally:
+            conn.close()
 
 def main():
-    parser = argparse.ArgumentParser(description='Scrape lottery data')
-    parser.add_argument('lottery_type', choices=['mega-millions', 'powerball'], 
+    parser = argparse.ArgumentParser(description='Scrape lottery data and update the database')
+    parser.add_argument('lottery_type', choices=['powerball', 'mega-millions'],
                       help='Type of lottery to scrape')
-    parser.add_argument('--start-date', type=str, required=False,
-                      help='Optional: Start date in YYYY-MM-DD format. If not provided, uses latest date from existing CSV')
-    parser.add_argument('--debug', action='store_true',
-                      help='Enable debug mode to save HTML files')
+    parser.add_argument('--start-date', type=str,
+                      help='Optional: Start date in YYYY-MM-DD format. If not provided, uses latest date from database')
+    
     args = parser.parse_args()
     
-    update_lottery_data(args.lottery_type, args.start_date, args.debug)
+    # Ensure database and tables exist
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS draws (
+                lottery_type TEXT,
+                draw_date TEXT,
+                winning_numbers TEXT,
+                special_ball INTEGER,
+                multiplier REAL,
+                PRIMARY KEY (lottery_type, draw_date)
+            )
+        ''')
+        conn.commit()
+    finally:
+        conn.close()
+    
+    # Start scraping
+    scraper = LotteryScraper(args.lottery_type)
+    new_records = scraper.scrape_and_update(args.start_date)
+    
+    if new_records > 0:
+        logger.info("Database update completed successfully")
+    else:
+        logger.info("No new records added")
 
 if __name__ == "__main__":
     main() 

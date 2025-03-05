@@ -87,7 +87,7 @@ async def get_number_frequencies(
                 FROM number_frequencies
                 WHERE lottery_type = ?
                 ORDER BY number
-            ''', (lottery_type.value.replace('-', '_'),))
+            ''', (lottery_type.value,))
         elif category == 'special':
             # Get special ball frequencies (position 6)
             cursor.execute('''
@@ -95,7 +95,7 @@ async def get_number_frequencies(
                 FROM position_frequencies
                 WHERE lottery_type = ? AND position = 6
                 ORDER BY number
-            ''', (lottery_type.value.replace('-', '_'),))
+            ''', (lottery_type.value,))
         else:
             raise HTTPException(status_code=400, detail="Invalid category. Use 'main' or 'special'")
         
@@ -128,7 +128,7 @@ async def get_position_frequencies(
             FROM position_frequencies
             WHERE lottery_type = ? AND position < 6
         '''
-        params = [lottery_type.value.replace('-', '_')]
+        params = [lottery_type.value]
         
         if position:
             query += ' AND position = ?'
@@ -169,7 +169,7 @@ async def check_combination(lottery_type: LotteryType, request: CombinationReque
             FROM draws
             WHERE lottery_type = ? AND winning_numbers = ?
             ORDER BY draw_date DESC
-        ''', (lottery_type.value.replace('-', '_'), main_numbers_str))
+        ''', (lottery_type.value, main_numbers_str))
         
         matches = cursor.fetchall()
         
@@ -245,7 +245,7 @@ async def generate_optimized_combination(lottery_type: LotteryType):
                 FROM position_frequencies
                 WHERE lottery_type = ? AND position = ?
                 ORDER BY frequency DESC
-            ''', (lottery_type.value.replace('-', '_'), position))
+            ''', (lottery_type.value, position))
             
             # Find the highest frequency number that isn't already selected
             for row in cursor.fetchall():
@@ -261,7 +261,7 @@ async def generate_optimized_combination(lottery_type: LotteryType):
             WHERE lottery_type = ? AND position = 6
             ORDER BY frequency DESC
             LIMIT 1
-        ''', (lottery_type.value.replace('-', '_'),))
+        ''', (lottery_type.value,))
         special_ball = cursor.fetchone()['number']
         
         # Check if combination exists
@@ -270,7 +270,7 @@ async def generate_optimized_combination(lottery_type: LotteryType):
             SELECT COUNT(*) as count
             FROM draws
             WHERE lottery_type = ? AND winning_numbers = ? AND special_ball = ?
-        ''', (lottery_type.value.replace('-', '_'), main_numbers_str, special_ball))
+        ''', (lottery_type.value, main_numbers_str, special_ball))
         
         is_unique = cursor.fetchone()['count'] == 0
         
@@ -286,7 +286,7 @@ async def generate_optimized_combination(lottery_type: LotteryType):
                         SELECT COUNT(*) as count
                         FROM draws
                         WHERE lottery_type = ? AND winning_numbers = ? AND special_ball = ?
-                    ''', (lottery_type.value.replace('-', '_'), main_numbers_str, special_ball))
+                    ''', (lottery_type.value, main_numbers_str, special_ball))
                     if cursor.fetchone()['count'] == 0:
                         is_unique = True
                         break
@@ -300,7 +300,7 @@ async def generate_optimized_combination(lottery_type: LotteryType):
                             SELECT COUNT(*) as count
                             FROM draws
                             WHERE lottery_type = ? AND winning_numbers = ? AND special_ball = ?
-                        ''', (lottery_type.value.replace('-', '_'), main_numbers_str, num))
+                        ''', (lottery_type.value, main_numbers_str, num))
                         if cursor.fetchone()['count'] == 0:
                             special_ball = num
                             is_unique = True
@@ -341,7 +341,7 @@ async def generate_random_combination(lottery_type: LotteryType):
                 SELECT COUNT(*) as count
                 FROM draws
                 WHERE lottery_type = ? AND winning_numbers = ? AND special_ball = ?
-            ''', (lottery_type.value.replace('-', '_'), main_numbers_str, special_ball))
+            ''', (lottery_type.value, main_numbers_str, special_ball))
             
             if cursor.fetchone()['count'] == 0:
                 conn.close()
@@ -374,7 +374,7 @@ async def get_latest_combinations(
         # Get total count
         cursor.execute(
             'SELECT COUNT(*) as count FROM draws WHERE lottery_type = ?',
-            (lottery_type.value.replace('-', '_'),)
+            (lottery_type.value,)
         )
         total_count = cursor.fetchone()['count']
         
@@ -388,7 +388,7 @@ async def get_latest_combinations(
             WHERE lottery_type = ?
             ORDER BY draw_date DESC
             LIMIT ? OFFSET ?
-        ''', (lottery_type.value.replace('-', '_'), page_size, offset))
+        ''', (lottery_type.value, page_size, offset))
         
         combinations = []
         for row in cursor.fetchall():
